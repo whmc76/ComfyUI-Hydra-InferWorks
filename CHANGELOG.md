@@ -9,3 +9,4 @@
 - Add shared mount path validation, artifact hashes, and durable receipts.
 - Persist each generation receipt atomically and verify Docker release state after stop.
 - Mark generation as an uncached ComfyUI output node so API workflows execute it directly.
+- Write staged WAV inputs with standard PCM encoding so TorchCodec is not required.

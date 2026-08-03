@@ -5,12 +5,13 @@ import json
 import os
 import time
 import uuid
+import wave
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Optional
 from urllib.request import Request, urlopen
 
-import torchaudio
+import torch
 from comfy_api.latest import ComfyExtension, Input, InputImpl, Types, io
 from typing_extensions import override
 
@@ -108,7 +109,24 @@ def _save_audio(audio: Input.Audio, target: Path) -> None:
     if waveform.shape[-1] <= 0:
         raise ValueError("hydra_heygem_audio_waveform_empty")
     target.parent.mkdir(parents=True, exist_ok=True)
-    torchaudio.save(str(target), waveform.detach().cpu(), int(audio["sample_rate"]))
+    pcm = (
+        waveform.detach()
+        .cpu()
+        .float()
+        .clamp(-1.0, 1.0)
+        .mul(32767.0)
+        .round()
+        .to(dtype=torch.int16)
+        .transpose(0, 1)
+        .contiguous()
+        .numpy()
+        .tobytes()
+    )
+    with wave.open(str(target), "wb") as output:
+        output.setnchannels(int(waveform.shape[0]))
+        output.setsampwidth(2)
+        output.setframerate(int(audio["sample_rate"]))
+        output.writeframes(pcm)
 
 
 def _save_reference_video(reference_video: Input.Video, target: Path) -> None:
