@@ -41,8 +41,12 @@ def map_result_to_host(
         if ".." in relative_path.parts:
             raise ArtifactPathError("result_path_traversal_forbidden")
         candidate = _require_under_root(root.joinpath(*relative_path.parts), root)
-    elif "/" not in normalized and normalized.lower().endswith((".mp4", ".avi", ".mkv", ".mov")):
-        candidate = _require_under_root(root / "temp" / normalized, root)
+    elif normalized.lstrip("/").count("/") == 0 and normalized.lower().endswith(
+        (".mp4", ".avi", ".mkv", ".mov")
+    ):
+        # HeyGem's easy API commonly reports the final muxed artifact as
+        # ``/<job>-r.mp4`` even though it lives under the shared temp folder.
+        candidate = _require_under_root(root / "temp" / normalized.lstrip("/"), root)
     else:
         path = Path(raw).expanduser()
         if not path.is_absolute():
@@ -57,3 +61,19 @@ def map_result_to_host(
         raise ArtifactPathError(f"result_artifact_missing_or_empty:{candidate}")
     return candidate
 
+
+def prefer_final_muxed_artifact(
+    mapped_result: Path | str,
+    *,
+    code: str,
+    shared_host_root: str | Path,
+) -> Path | str:
+    """Replace HeyGem's transient per-job result.avi with its final muxed MP4."""
+
+    if isinstance(mapped_result, str):
+        return mapped_result
+    root = Path(shared_host_root).expanduser().resolve(strict=False)
+    resolved = mapped_result.resolve(strict=False)
+    if resolved.name.lower() == "result.avi" and resolved.parent.name == code:
+        return _require_under_root(root / "temp" / f"{code}-r.mp4", root)
+    return resolved

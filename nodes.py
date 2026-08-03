@@ -20,7 +20,7 @@ import comfy.model_management
 from .hydra_heygem.client import HeyGemClient
 from .hydra_heygem.config import resolve_endpoint_config
 from .hydra_heygem.lifecycle import DockerContainerLifecycle
-from .hydra_heygem.paths import map_result_to_host
+from .hydra_heygem.paths import map_result_to_host, prefer_final_muxed_artifact
 
 
 CONTRACT_VERSION = "hydra_comfyui_heygem_longform_avatar_receipt.v1"
@@ -312,6 +312,11 @@ class HydraHeyGemLongformAvatar(io.ComfyNode):
                 generation_receipt.result,
                 shared_host_root=shared_root,
                 container_data_root=container_root,
+            )
+            mapped_result = prefer_final_muxed_artifact(
+                mapped_result,
+                code=job_code,
+                shared_host_root=shared_root,
             )
             if isinstance(mapped_result, str):
                 output_path = _download_result(
