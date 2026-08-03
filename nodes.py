@@ -20,6 +20,7 @@ import comfy.model_management
 from .hydra_heygem.client import HeyGemClient
 from .hydra_heygem.config import resolve_endpoint_config
 from .hydra_heygem.lifecycle import DockerContainerLifecycle
+from .hydra_heygem.job_identity import resolve_job_code
 from .hydra_heygem.paths import map_result_to_host, prefer_final_muxed_artifact
 
 
@@ -176,6 +177,14 @@ class HydraHeyGemLongformAvatar(io.ComfyNode):
                 io.Audio.Input("audio", tooltip="The exact authoritative speech waveform."),
                 io.Video.Input("reference_video", tooltip="The locked HeyGem presenter reference video."),
                 io.String.Input(
+                    "job_code",
+                    default="auto",
+                    tooltip=(
+                        "Optional caller-owned correlation identity. Safe explicit values make the "
+                        "durable receipt path deterministic; auto generates a unique identity."
+                    ),
+                ),
+                io.String.Input(
                     "service_url",
                     default="auto",
                     tooltip="Full http(s) service URL. Overrides host/port and environment when set.",
@@ -233,6 +242,7 @@ class HydraHeyGemLongformAvatar(io.ComfyNode):
         cls,
         audio: Input.Audio,
         reference_video: Input.Video,
+        job_code: str,
         service_url: str,
         service_host: str,
         service_port: int,
@@ -258,7 +268,7 @@ class HydraHeyGemLongformAvatar(io.ComfyNode):
         shared_root = _resolve_shared_host_root(shared_host_root)
         container_root = _resolve_container_data_root(container_data_root)
         resolved_container_name = _resolve_container_name(container_name)
-        job_code = f"hydra-heygem-{uuid.uuid4()}"
+        job_code = resolve_job_code(job_code)
         audio_relative = PurePosixPath("inputs") / "audio" / f"{job_code}.wav"
         video_relative = PurePosixPath("inputs") / "video" / f"{job_code}.mp4"
         audio_host_path = shared_root.joinpath(*audio_relative.parts)

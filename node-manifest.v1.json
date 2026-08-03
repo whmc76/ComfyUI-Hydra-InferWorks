@@ -1,7 +1,7 @@
 {
   "contract_version": "hydra_comfyui_heygem_node_manifest.v1",
   "package": "comfyui-hydra-heygem",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "minimum_comfyui_version": "0.30.0",
   "nodes": [
     {
@@ -10,6 +10,7 @@
       "inputs": {
         "audio": "AUDIO",
         "reference_video": "VIDEO",
+        "job_code": "STRING",
         "service_url": "STRING",
         "service_host": "STRING",
         "service_port": "INT",
@@ -28,7 +29,7 @@
     "long_video_output_remains_file_backed",
     "shared_mount_path_traversal_is_rejected",
     "provider_failure_is_fail_closed",
+    "caller_job_identity_correlates_prompt_receipt_and_artifact",
     "receipt_contains_artifact_hash"
   ]
 }
-

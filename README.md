@@ -18,6 +18,7 @@ production. `HydraHeyGemLongformAvatar` instead:
 - unloads resident ComfyUI models before handing the GPU to HeyGem;
 - stages inputs through an explicitly configured shared host/container mount;
 - returns a file-backed `VIDEO`, the artifact path, and a JSON receipt that is also atomically persisted under `<shared_host_root>/receipts`;
+- accepts an optional safe caller-owned `job_code`, allowing Hydra to deterministically correlate a ComfyUI prompt with `<shared_host_root>/receipts/<job_code>.json` and the final artifact;
 - rejects invalid endpoints, path traversal, empty artifacts, and provider failure.
 
 ## Requirements

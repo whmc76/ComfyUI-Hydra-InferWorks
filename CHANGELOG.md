@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.0
+
+- Add a caller-owned, path-safe `job_code` input for deterministic prompt, receipt, and artifact correlation.
+- Preserve automatic UUID generation for interactive ComfyUI use.
+
 ## 0.1.0 - 2026-08-03
 
 - Add the `HydraHeyGemLongformAvatar` ComfyUI node.
