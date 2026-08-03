@@ -1,0 +1,44 @@
+{
+  "1": {
+    "class_type": "LoadAudio",
+    "inputs": {
+      "audio": "presenter.wav"
+    }
+  },
+  "2": {
+    "class_type": "LoadVideo",
+    "inputs": {
+      "file": "presenter-reference.mp4"
+    }
+  },
+  "3": {
+    "class_type": "HydraHeyGemLongformAvatar",
+    "inputs": {
+      "audio": [
+        "1",
+        0
+      ],
+      "reference_video": [
+        "2",
+        0
+      ],
+      "service_url": "auto",
+      "service_host": "auto",
+      "service_port": 0,
+      "submit_path": "/easy/submit",
+      "query_path": "/easy/query",
+      "health_path": "auto",
+      "shared_host_root": "auto",
+      "container_data_root": "auto",
+      "lifecycle_mode": "external",
+      "container_name": "auto",
+      "release_comfyui_models": true,
+      "stop_container_after": false,
+      "ready_timeout_seconds": 90,
+      "generation_timeout_seconds": 7200,
+      "poll_interval_seconds": 3.0,
+      "artifact_wait_seconds": 60
+    }
+  }
+}
+

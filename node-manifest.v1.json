@@ -1,0 +1,34 @@
+{
+  "contract_version": "hydra_comfyui_heygem_node_manifest.v1",
+  "package": "comfyui-hydra-heygem",
+  "version": "0.1.0",
+  "minimum_comfyui_version": "0.30.0",
+  "nodes": [
+    {
+      "class_type": "HydraHeyGemLongformAvatar",
+      "category": "HydraMatrix/avatar",
+      "inputs": {
+        "audio": "AUDIO",
+        "reference_video": "VIDEO",
+        "service_url": "STRING",
+        "service_host": "STRING",
+        "service_port": "INT",
+        "shared_host_root": "STRING",
+        "container_data_root": "STRING"
+      },
+      "outputs": [
+        "VIDEO",
+        "STRING",
+        "STRING"
+      ]
+    }
+  ],
+  "invariants": [
+    "service_port_is_runtime_configurable",
+    "long_video_output_remains_file_backed",
+    "shared_mount_path_traversal_is_rejected",
+    "provider_failure_is_fail_closed",
+    "receipt_contains_artifact_hash"
+  ]
+}
+
