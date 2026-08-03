@@ -17,7 +17,7 @@ production. `HydraHeyGemLongformAvatar` instead:
 - can use an externally managed service or start/stop an existing Docker container;
 - unloads resident ComfyUI models before handing the GPU to HeyGem;
 - stages inputs through an explicitly configured shared host/container mount;
-- returns a file-backed `VIDEO`, the artifact path, and a durable JSON receipt;
+- returns a file-backed `VIDEO`, the artifact path, and a JSON receipt that is also atomically persisted under `<shared_host_root>/receipts`;
 - rejects invalid endpoints, path traversal, empty artifacts, and provider failure.
 
 ## Requirements
@@ -106,4 +106,3 @@ This repository contains only the ComfyUI integration. HeyGem and any container
 image or model weights retain their own licenses and usage restrictions.
 
 Licensed under Apache-2.0.
-

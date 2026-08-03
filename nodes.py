@@ -85,6 +85,20 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _write_atomic_json(value: object, target: Path) -> Path:
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temporary = target.with_name(f".{target.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        temporary.write_text(
+            json.dumps(value, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        temporary.replace(target)
+    finally:
+        temporary.unlink(missing_ok=True)
+    return target.resolve()
+
+
 def _save_audio(audio: Input.Audio, target: Path) -> None:
     waveform = audio["waveform"]
     if waveform is None or waveform.ndim not in {2, 3}:
@@ -192,6 +206,8 @@ class HydraHeyGemLongformAvatar(io.ComfyNode):
                 io.String.Output(display_name="artifact_path"),
                 io.String.Output(display_name="receipt_json"),
             ],
+            is_output_node=True,
+            not_idempotent=True,
         )
 
     @classmethod
@@ -293,10 +309,12 @@ class HydraHeyGemLongformAvatar(io.ComfyNode):
 
         if generation_receipt is None or output_path is None:
             raise ValueError("hydra_heygem_generation_receipt_missing")
+        receipt_path = (shared_root / "receipts" / f"{job_code}.json").resolve()
         receipt = {
             "contract_version": CONTRACT_VERSION,
             "generated_at": datetime.now(timezone.utc).isoformat(),
             "job_code": job_code,
+            "receipt_path": str(receipt_path),
             "service": {
                 "base_url": endpoint.base_url,
                 "host": endpoint.host,
@@ -336,6 +354,7 @@ class HydraHeyGemLongformAvatar(io.ComfyNode):
                 "final_response": generation_receipt.final_response,
             },
         }
+        _write_atomic_json(receipt, receipt_path)
         return io.NodeOutput(
             InputImpl.VideoFromFile(str(output_path)),
             str(output_path),

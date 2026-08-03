@@ -100,6 +100,10 @@ class DockerContainerLifecycle:
                 raise ContainerLifecycleError(
                     f"container_stop_failed:{self.container_name}:{stderr.strip()[:300]}"
                 )
+            if self._is_running():
+                raise ContainerLifecycleError(
+                    f"container_release_verification_failed:{self.container_name}"
+                )
             stopped = True
         return ContainerLifecycleReceipt(
             self.mode,
@@ -108,4 +112,3 @@ class DockerContainerLifecycle:
             self.started,
             stopped,
         )
-

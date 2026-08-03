@@ -1,4 +1,6 @@
-from hydra_heygem.lifecycle import DockerContainerLifecycle
+import pytest
+
+from hydra_heygem.lifecycle import ContainerLifecycleError, DockerContainerLifecycle
 
 
 class ScriptedRunner:
@@ -46,6 +48,7 @@ def test_managed_mode_starts_configured_container_and_can_release_it():
         ["docker", "inspect", "-f", "{{.State.Running}}", "custom-heygem"],
         ["docker", "start", "custom-heygem"],
         ["docker", "stop", "custom-heygem"],
+        ["docker", "inspect", "-f", "{{.State.Running}}", "custom-heygem"],
     ]
 
 
@@ -60,3 +63,22 @@ def test_managed_mode_keeps_warm_when_stop_is_not_requested():
     assert prepared.started is False
     assert released.stopped is False
 
+
+def test_managed_mode_fails_closed_when_stop_does_not_release_container():
+    runner = ScriptedRunner(running=True)
+
+    def ineffective_stop(command, *, timeout_seconds):
+        if command[:2] == ["docker", "stop"]:
+            runner.calls.append((list(command), timeout_seconds))
+            return 0, "container\n", ""
+        return runner(command, timeout_seconds=timeout_seconds)
+
+    manager = DockerContainerLifecycle(
+        "docker_existing_container",
+        "hm-heygem",
+        runner=ineffective_stop,
+    )
+    manager.prepare()
+
+    with pytest.raises(ContainerLifecycleError, match="container_release_verification_failed"):
+        manager.release(stop_after_job=True)
