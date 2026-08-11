@@ -1,0 +1,7 @@
+* text=auto
+*.py text eol=lf
+*.toml text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+top_tts_vendor/** whitespace=-trailing-space,-blank-at-eof
+UPSTREAM_MODEL_LICENSE.txt whitespace=-trailing-space

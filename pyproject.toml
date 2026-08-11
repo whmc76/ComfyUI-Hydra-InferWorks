@@ -1,0 +1,41 @@
+[project]
+name = "top-tts"
+description = "Local IndexTTS 2.5 voice cloning, multilingual speech synthesis, and emotion control for ComfyUI."
+version = "0.1.0"
+license = { file = "LICENSE" }
+requires-python = ">=3.10"
+dependencies = [
+  "accelerate>=1.8.1",
+  "cn2an>=0.5.22",
+  "descript-audiotools>=0.7.2",
+  "einops>=0.8.1",
+  "ffmpeg-python>=0.2.0",
+  "fugashi>=1.2.0",
+  "unidic-lite>=1.0.0",
+  "g2p-en>=2.1.0",
+  "jieba>=0.42.1",
+  "json5>=0.10.0",
+  "librosa>=0.10.2",
+  "modelscope>=1.27.0",
+  "munch>=4.0.0",
+  "numba>=0.61.0",
+  "numpy>=2.0,<2.3",
+  "omegaconf>=2.3.0",
+  "safetensors>=0.5.2",
+  "sentencepiece>=0.2.1",
+  "soundfile>=0.12.1",
+  "textstat>=0.7.10",
+  "openai-whisper>=20231117",
+  "huggingface-hub>=0.30.0",
+  "wetext>=0.0.9; platform_system!='Linux'",
+  "WeTextProcessing>=1.0.3; platform_system=='Linux'",
+]
+
+[project.urls]
+Repository = "https://github.com/whmc76/ComfyUI-Top-TTS"
+Documentation = "https://github.com/whmc76/ComfyUI-Top-TTS#readme"
+
+[tool.comfy]
+PublisherId = "whmc76"
+DisplayName = "ComfyUI Top TTS"
+Icon = "https://raw.githubusercontent.com/whmc76/ComfyUI-Top-TTS/main/assets/icon.svg"
