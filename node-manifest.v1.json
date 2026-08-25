@@ -1,8 +1,9 @@
 {
   "contract_version": "hydra_inferworks_node_manifest.v1",
   "package": "comfyui-hydra-inferworks",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "minimum_comfyui_version": "0.30.0",
+  "inference_profiles": "inference-profiles.v1.json",
   "capabilities": [
     {
       "key": "tts",
@@ -18,9 +19,9 @@
     {
       "key": "asr",
       "provider": "Qwen/Qwen3-ASR-1.7B + Qwen/Qwen3-ForcedAligner-0.6B",
-      "external_node_dependency": "DarioFT/ComfyUI-Qwen3-ASR",
       "model_weights_bundled": false,
       "nodes": [
+        "HydraQwen3ASRModelLoader",
         "HydraQwen3LongAsrTranscribe",
         "HydraQwen3ForcedAlign",
         "HydraTranscriptReceipt"
@@ -41,6 +42,7 @@
       "TopTTS25EmotionVector",
       "TopTTS25Synthesize",
       "TopTTS25UnloadModel",
+      "HydraQwen3ASRModelLoader",
       "HydraQwen3LongAsrTranscribe",
       "HydraQwen3ForcedAlign",
       "HydraTranscriptReceipt",
@@ -56,6 +58,8 @@
     "capability_import_failures_are_isolated",
     "index_tts_2_5_inference_is_local_and_offline_after_model_setup",
     "tts_worker_cleanup_is_deterministic",
+    "inference_precision_quantization_and_acceleration_are_recorded",
+    "unverified_quantization_profiles_fail_closed",
     "asr_long_audio_timestamps_restore_one_global_timeline",
     "locked_script_alignment_fails_closed_on_anchor_mismatch",
     "heygem_service_endpoint_is_runtime_configurable",
@@ -64,4 +68,3 @@
     "receipts_bind_artifacts_to_sha256"
   ]
 }
-

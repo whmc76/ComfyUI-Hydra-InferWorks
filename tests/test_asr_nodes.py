@@ -18,6 +18,7 @@ _SPEC = spec_from_file_location("hydra_comfyui_audio_nodes", Path(__file__).reso
 _MODULE = module_from_spec(_SPEC)
 _SPEC.loader.exec_module(_MODULE)
 HydraQwen3ForcedAlign = _MODULE.HydraQwen3ForcedAlign
+HydraQwen3ASRModelLoader = _MODULE.HydraQwen3ASRModelLoader
 HydraQwen3LongAsrTranscribe = _MODULE.HydraQwen3LongAsrTranscribe
 HydraTranscriptReceipt = _MODULE.HydraTranscriptReceipt
 
@@ -55,6 +56,11 @@ class _AsrModel:
 
 
 class HydraAudioNodeTests(unittest.TestCase):
+    def test_loader_defaults_to_quality_admitted_bf16_sdpa(self):
+        inputs = HydraQwen3ASRModelLoader.INPUT_TYPES()["required"]
+        self.assertEqual(inputs["optimization_profile"][1]["default"], "transformers_bf16_sdpa")
+        self.assertIn("vllm_bf16", inputs["optimization_profile"][0])
+
     def test_long_asr_uses_multiple_native_calls_and_restores_global_timeline(self):
         waveform = torch.cat([
             torch.full((900,), 1.0),
@@ -146,8 +152,35 @@ class HydraAudioNodeTests(unittest.TestCase):
         self.assertTrue(evidence["timestamp_offsets_preserved"])
         self.assertEqual(evidence["source_duration_seconds"], 200.0)
 
+    def test_receipt_preserves_runtime_precision_and_acceleration_profile(self):
+        metadata = {
+            "contract_version": "hydra_qwen3_long_asr_execution.v1",
+            "inference_profile": {
+                "contract_version": "hydra_inferworks_asr_inference_profile.v1",
+                "profile_key": "transformers_bf16_sdpa",
+                "backend": "transformers",
+                "precision": "bf16",
+                "quantization": "none",
+                "attention_backend": "sdpa",
+                "quality_admission": "production",
+            },
+        }
+        result = HydraTranscriptReceipt().write_receipt(
+            "甲",
+            "Chinese",
+            "0-1: 甲",
+            "hydramatrix/test/inference-profile",
+            "b" * 64,
+            "Qwen/Qwen3-ASR-1.7B",
+            "Qwen/Qwen3-ForcedAligner-0.6B",
+            processing_metadata=__import__("json").dumps(metadata),
+        )
+        payload = __import__("json").loads(Path(result["result"][0]).read_text(encoding="utf-8"))
+        self.assertEqual(payload["inference_profile"]["precision"], "bf16")
+        self.assertEqual(payload["inference_profile"]["attention_backend"], "sdpa")
+        self.assertEqual(payload["inference_profile"]["quantization"], "none")
+
 
 if __name__ == "__main__":
     unittest.main()
-
 

@@ -1,4 +1,5 @@
 import hashlib
+import importlib.util
 import json
 import os
 import re
@@ -10,8 +11,188 @@ import numpy as np
 import torch
 
 
+ASR_OPTIMIZATION_PROFILES = {
+    "transformers_bf16_sdpa": {
+        "backend": "transformers",
+        "precision": "bf16",
+        "attention_backend": "sdpa",
+        "quantization": "none",
+    },
+    "transformers_bf16_flash_attention_2": {
+        "backend": "transformers",
+        "precision": "bf16",
+        "attention_backend": "flash_attention_2",
+        "quantization": "none",
+    },
+    "vllm_bf16": {
+        "backend": "vllm",
+        "precision": "bf16",
+        "attention_backend": "vllm_managed",
+        "quantization": "none",
+    },
+    "reference_fp32_eager": {
+        "backend": "transformers",
+        "precision": "fp32",
+        "attention_backend": "eager",
+        "quantization": "none",
+    },
+}
+
+
 def _text(value):
     return str(value or "").strip()
+
+
+def _resolve_asr_model_directory(value, default_relative_path):
+    root = Path(folder_paths.models_dir).resolve()
+    raw = _text(value) or default_relative_path
+    candidate = Path(raw)
+    if not candidate.is_absolute():
+        candidate = root / candidate
+    candidate = candidate.resolve()
+    try:
+        candidate.relative_to(root)
+    except ValueError as error:
+        raise ValueError("hydra_qwen3_asr_model_outside_comfyui_models") from error
+    if not candidate.is_dir() or not any(candidate.iterdir()):
+        raise FileNotFoundError(f"hydra_qwen3_asr_model_directory_missing:{candidate}")
+    return candidate
+
+
+def _model_inference_profile(model):
+    recorded = getattr(model, "_hydra_inference_profile", None)
+    if isinstance(recorded, dict):
+        return dict(recorded)
+    inner = getattr(model, "model", None)
+    config = getattr(inner, "config", None)
+    dtype = getattr(model, "dtype", None) or getattr(inner, "dtype", None)
+    attention = (
+        getattr(config, "_attn_implementation", None)
+        or getattr(config, "_attn_implementation_internal", None)
+        or "unknown"
+    )
+    return {
+        "contract_version": "hydra_inferworks_asr_inference_profile.v1",
+        "profile_key": "external_loader_observed",
+        "backend": _text(getattr(model, "backend", None)) or "transformers",
+        "precision": _text(dtype).replace("torch.", "") or "unknown",
+        "quantization": "unknown",
+        "attention_backend": _text(attention) or "unknown",
+        "quality_admission": "unverified_external_loader",
+    }
+
+
+class HydraQwen3ASRModelLoader:
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "model_directory": (
+                    "STRING",
+                    {"default": "Qwen3-ASR/Qwen3-ASR-1.7B"},
+                ),
+                "forced_aligner_directory": (
+                    "STRING",
+                    {"default": "Qwen3-ASR/Qwen3-ForcedAligner-0.6B"},
+                ),
+                "optimization_profile": (
+                    list(ASR_OPTIMIZATION_PROFILES),
+                    {"default": "transformers_bf16_sdpa"},
+                ),
+                "max_inference_batch_size": (
+                    "INT",
+                    {"default": 32, "min": 1, "max": 128},
+                ),
+            }
+        }
+
+    RETURN_TYPES = ("QWEN3_ASR_MODEL", "STRING")
+    RETURN_NAMES = ("model", "model_info")
+    FUNCTION = "load_model"
+    CATEGORY = "Hydra InferWorks/ASR"
+    DESCRIPTION = "Loads local Qwen3-ASR with an explicit, auditable acceleration profile."
+
+    def load_model(
+        self,
+        model_directory,
+        forced_aligner_directory,
+        optimization_profile,
+        max_inference_batch_size,
+    ):
+        from comfy import model_management
+        from qwen_asr import Qwen3ASRModel
+
+        profile_key = _text(optimization_profile).lower()
+        selected = ASR_OPTIMIZATION_PROFILES.get(profile_key)
+        if selected is None:
+            raise ValueError(f"hydra_qwen3_asr_optimization_profile_invalid:{profile_key}")
+        device = model_management.get_torch_device()
+        if selected["precision"] == "bf16":
+            if device.type != "cuda" or not torch.cuda.is_bf16_supported():
+                raise RuntimeError("hydra_qwen3_asr_bf16_cuda_required")
+            dtype = torch.bfloat16
+        else:
+            dtype = torch.float32
+        if selected["attention_backend"] == "flash_attention_2" and importlib.util.find_spec("flash_attn") is None:
+            raise RuntimeError("hydra_qwen3_asr_flash_attention_2_required")
+        if selected["backend"] == "vllm" and importlib.util.find_spec("vllm") is None:
+            raise RuntimeError("hydra_qwen3_asr_vllm_required")
+
+        model_path = _resolve_asr_model_directory(
+            model_directory,
+            "Qwen3-ASR/Qwen3-ASR-1.7B",
+        )
+        aligner_path = _resolve_asr_model_directory(
+            forced_aligner_directory,
+            "Qwen3-ASR/Qwen3-ForcedAligner-0.6B",
+        )
+        batch_size = max(1, min(128, int(max_inference_batch_size)))
+        if selected["backend"] == "vllm":
+            model = Qwen3ASRModel.LLM(
+                model=str(model_path),
+                forced_aligner=str(aligner_path),
+                forced_aligner_kwargs={"dtype": dtype, "device_map": str(device)},
+                max_inference_batch_size=batch_size,
+                dtype="bfloat16",
+            )
+        else:
+            attention = selected["attention_backend"]
+            model = Qwen3ASRModel.from_pretrained(
+                str(model_path),
+                forced_aligner=str(aligner_path),
+                forced_aligner_kwargs={
+                    "dtype": dtype,
+                    "device_map": str(device),
+                    "attn_implementation": attention,
+                },
+                max_inference_batch_size=batch_size,
+                max_new_tokens=256,
+                dtype=dtype,
+                device_map=str(device),
+                attn_implementation=attention,
+            )
+        runtime_profile = {
+            "contract_version": "hydra_inferworks_asr_inference_profile.v1",
+            "profile_key": profile_key,
+            **selected,
+            "device": str(device),
+            "max_inference_batch_size": batch_size,
+            "quality_admission": (
+                "production" if profile_key == "transformers_bf16_sdpa" else "candidate"
+            ),
+        }
+        model._hydra_inference_profile = runtime_profile
+        info = " | ".join(
+            (
+                "Qwen3-ASR 1.7B",
+                profile_key,
+                str(device),
+                selected["precision"],
+                f"quantization={selected['quantization']}",
+                f"attention={selected['attention_backend']}",
+            )
+        )
+        return model, info
 
 
 def _safe_prefix(value):
@@ -254,6 +435,7 @@ class HydraQwen3LongAsrTranscribe:
             })
         metadata = {
             "contract_version": "hydra_qwen3_long_asr_execution.v1",
+            "inference_profile": _model_inference_profile(model),
             "automatic_chunking": len(chunk_receipts) > 1,
             "actual_chunk_count": len(chunk_receipts),
             "max_chunk_seconds": chunk_limit,
@@ -370,6 +552,7 @@ class HydraQwen3ForcedAlign:
             raise ValueError("hydra_qwen3_forced_align_timestamps_missing")
         metadata = {
             "contract_version": "hydra_qwen3_forced_alignment_execution.v1",
+            "inference_profile": _model_inference_profile(model),
             "automatic_chunking": len(plans) > 1,
             "actual_chunk_count": len(plans),
             "max_chunk_seconds": chunk_limit,
@@ -451,6 +634,11 @@ class HydraTranscriptReceipt:
             "text": transcript,
             "timestamps_present": bool(segments),
             "segments": segments,
+            "inference_profile": (
+                execution_details.get("inference_profile")
+                if isinstance(execution_details, dict)
+                else None
+            ),
             "long_audio_processing": {
                 "processing_mode": _text(processing_mode) or "qwen3_asr_native_chunk_merge",
                 "source_duration_seconds": round(source_duration_seconds, 6) if source_duration_seconds is not None else None,
@@ -500,14 +688,15 @@ class HydraTranscriptReceipt:
 
 
 NODE_CLASS_MAPPINGS = {
+    "HydraQwen3ASRModelLoader": HydraQwen3ASRModelLoader,
     "HydraTranscriptReceipt": HydraTranscriptReceipt,
     "HydraQwen3ForcedAlign": HydraQwen3ForcedAlign,
     "HydraQwen3LongAsrTranscribe": HydraQwen3LongAsrTranscribe,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
+    "HydraQwen3ASRModelLoader": "Hydra InferWorks · Qwen3-ASR · Load Optimized Model",
     "HydraTranscriptReceipt": "Hydra InferWorks · Transcript Receipt",
     "HydraQwen3ForcedAlign": "Hydra InferWorks · Qwen3 Locked-Script Forced Align",
     "HydraQwen3LongAsrTranscribe": "Hydra InferWorks · Qwen3 Long-Audio Transcribe",
 }
-

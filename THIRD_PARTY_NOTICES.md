@@ -2,7 +2,7 @@
 
 This repository includes a pinned copy of the official IndexTTS 2.5 inference source from
 [`index-tts/index-tts`](https://github.com/index-tts/index-tts), commit
-`b5ea881bec284b72f0b1cc04e0a724ff0c6b93e9`.
+`ee40fa7d6c6b8a2c7f06105f9f1e65775b74868c`.
 
 The vendored IndexTTS source and the separately downloaded IndexTTS model weights are governed
 by the upstream bilibili Model Use License Agreement in `UPSTREAM_MODEL_LICENSE.txt`. They are

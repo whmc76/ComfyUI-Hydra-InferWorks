@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.1.0 - 2026-08-25
+
+- Add explicit IndexTTS 2.5 quality, compiled, maximum-acceleration, and FP32 reference profiles.
+- Make requested CUDA-kernel and FlashAttention acceleration fail closed when it is not actually available.
+- Add the Hydra-owned Qwen3-ASR model loader with BF16 SDPA, FlashAttention 2, vLLM, and FP32 reference profiles.
+- Record precision, quantization, attention backend, acceleration flags, and quality-admission state in model information and transcript receipts.
+- Keep unverified INT8/INT4 checkpoints out of production profiles until task-specific voice and transcription quality gates pass.
+
 ## 1.0.0 - 2026-08-25
 
 - Rename the unified public node pack to Hydra InferWorks.

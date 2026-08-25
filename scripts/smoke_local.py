@@ -2,6 +2,7 @@
 
 import argparse
 import importlib.util
+import os
 import sys
 from pathlib import Path
 
@@ -10,7 +11,7 @@ import torch
 
 
 PLUGIN_DIR = Path(__file__).resolve().parents[1]
-COMFYUI_DIR = PLUGIN_DIR.parents[1]
+COMFYUI_DIR = Path(os.environ.get("COMFYUI_ROOT", str(PLUGIN_DIR.parents[1]))).resolve()
 
 
 def load_nodes_module():
@@ -27,6 +28,13 @@ def main() -> None:
     parser.add_argument("reference_audio", type=Path)
     parser.add_argument("output", type=Path)
     parser.add_argument("--text", default="你好，这是 Hydra InferWorks 的 IndexTTS 2.5 本地推理验证。")
+    parser.add_argument(
+        "--optimization-profile",
+        choices=("quality_bf16", "compiled_bf16", "maximum_bf16", "reference_fp32", "legacy_custom"),
+        default="quality_bf16",
+    )
+    parser.add_argument("--use-cuda-kernel", action="store_true")
+    parser.add_argument("--use-torch-compile", action="store_true")
     args = parser.parse_args()
 
     nodes = load_nodes_module()
@@ -38,8 +46,9 @@ def main() -> None:
         device="cuda",
         precision="bf16",
         load_emotion_text_model=False,
-        use_cuda_kernel=False,
-        use_torch_compile=False,
+        use_cuda_kernel=args.use_cuda_kernel,
+        use_torch_compile=args.use_torch_compile,
+        optimization_profile=args.optimization_profile,
     )
     try:
         audio, generation_info = nodes.TopTTS25Synthesize().synthesize(

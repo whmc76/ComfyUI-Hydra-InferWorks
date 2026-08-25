@@ -7,7 +7,7 @@ import requests
 
 
 REPOSITORY = "index-tts/index-tts"
-COMMIT = "b5ea881bec284b72f0b1cc04e0a724ff0c6b93e9"
+COMMIT = "ee40fa7d6c6b8a2c7f06105f9f1e65775b74868c"
 ROOT = Path(__file__).resolve().parents[1]
 DESTINATION = ROOT / "top_tts_vendor"
 SKIPPED_SUFFIXES = (

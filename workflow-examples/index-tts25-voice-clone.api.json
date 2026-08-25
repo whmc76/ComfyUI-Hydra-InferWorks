@@ -13,7 +13,8 @@
       "precision": "bf16",
       "load_emotion_text_model": false,
       "use_cuda_kernel": false,
-      "use_torch_compile": false
+      "use_torch_compile": false,
+      "optimization_profile": "quality_bf16"
     }
   },
   "3": {
@@ -83,4 +84,3 @@
     }
   }
 }
-

@@ -23,6 +23,13 @@ PRIVATE_DEPS_DIR = PLUGIN_DIR / "python_deps"
 DEFAULT_MODEL_DIRECTORY = "IndexTTS-2.5"
 MODEL_TYPE = "TOP_TTS_2_5_MODEL"
 EMOTION_TYPE = "TOP_TTS_2_5_EMOTION"
+TTS_OPTIMIZATION_PROFILES = (
+    "quality_bf16",
+    "compiled_bf16",
+    "maximum_bf16",
+    "reference_fp32",
+    "legacy_custom",
+)
 
 MAIN_MODEL_FILES = (
     "config.yaml",
@@ -204,6 +211,9 @@ class TopTTSModel:
     model_dir: Path
     device: str
     precision: str
+    quantization: str
+    optimization_profile: str
+    acceleration: dict[str, bool]
     emotion_model_loaded: bool
 
     def unload(self) -> None:
@@ -227,7 +237,10 @@ class TopTTS25ModelLoader:
                 "load_emotion_text_model": ("BOOLEAN", {"default": False}),
                 "use_cuda_kernel": ("BOOLEAN", {"default": False}),
                 "use_torch_compile": ("BOOLEAN", {"default": False}),
-            }
+            },
+            "optional": {
+                "optimization_profile": (TTS_OPTIMIZATION_PROFILES, {"default": "quality_bf16"}),
+            },
         }
 
     RETURN_TYPES = (MODEL_TYPE, "STRING")
@@ -244,6 +257,7 @@ class TopTTS25ModelLoader:
         load_emotion_text_model: bool,
         use_cuda_kernel: bool,
         use_torch_compile: bool,
+        optimization_profile: str = "quality_bf16",
     ):
         model_dir = _resolve_model_directory(model_directory)
         missing = _missing_model_files(model_dir, load_emotion_text_model)
@@ -256,6 +270,31 @@ class TopTTS25ModelLoader:
             )
 
         _ensure_runtime()
+        profile = str(optimization_profile or "quality_bf16").strip().lower()
+        if profile not in TTS_OPTIMIZATION_PROFILES:
+            raise ValueError(f"hydra_indextts25_optimization_profile_invalid:{profile}")
+        if profile == "quality_bf16":
+            precision = "bf16"
+            use_cuda_kernel = False
+            use_torch_compile = False
+            use_gpt_acceleration = False
+        elif profile == "compiled_bf16":
+            precision = "bf16"
+            use_cuda_kernel = False
+            use_torch_compile = True
+            use_gpt_acceleration = False
+        elif profile == "maximum_bf16":
+            precision = "bf16"
+            use_cuda_kernel = True
+            use_torch_compile = True
+            use_gpt_acceleration = True
+        elif profile == "reference_fp32":
+            precision = "fp32"
+            use_cuda_kernel = False
+            use_torch_compile = False
+            use_gpt_acceleration = False
+        else:
+            use_gpt_acceleration = False
         resolved_device = None if device == "auto" else ("cuda:0" if device == "cuda" else device)
         if resolved_device == "cuda:0" and not torch.cuda.is_available():
             raise RuntimeError("CUDA was selected, but PyTorch cannot access a CUDA device")
@@ -268,6 +307,8 @@ class TopTTS25ModelLoader:
                 "device": resolved_device,
                 "use_cuda_kernel": bool(use_cuda_kernel),
                 "use_torch_compile": bool(use_torch_compile),
+                "use_gpt_acceleration": bool(use_gpt_acceleration),
+                "optimization_profile": profile,
                 "use_qwen_emo": bool(load_emotion_text_model),
             }
         )
@@ -276,9 +317,17 @@ class TopTTS25ModelLoader:
             model_dir=model_dir,
             device=worker.info["device"],
             precision=worker.info["precision"],
+            quantization=worker.info["quantization"],
+            optimization_profile=worker.info["optimization_profile"],
+            acceleration=worker.info["acceleration"],
             emotion_model_loaded=load_emotion_text_model,
         )
-        info = f"IndexTTS 2.5 | {handle.device} | {handle.precision} | {model_dir}"
+        enabled = ",".join(key for key, value in handle.acceleration.items() if value) or "eager"
+        info = (
+            f"IndexTTS 2.5 | {handle.device} | {handle.precision} | "
+            f"quantization={handle.quantization} | profile={handle.optimization_profile} | "
+            f"acceleration={enabled} | {model_dir}"
+        )
         return handle, info
 
 
@@ -421,7 +470,12 @@ class TopTTS25Synthesize:
                 if path and os.path.isfile(path):
                     os.unlink(path)
         duration = audio["waveform"].shape[-1] / audio["sample_rate"]
-        info = f"IndexTTS 2.5 | {language} | {duration:.2f}s | seed {seed} | local inference"
+        enabled = ",".join(key for key, value in model.acceleration.items() if value) or "eager"
+        info = (
+            f"IndexTTS 2.5 | {language} | {duration:.2f}s | seed {seed} | "
+            f"{model.precision} | quantization={model.quantization} | "
+            f"profile={model.optimization_profile} | acceleration={enabled} | local inference"
+        )
         return audio, info
 
 

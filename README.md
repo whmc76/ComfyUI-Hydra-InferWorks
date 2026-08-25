@@ -49,15 +49,28 @@ TTS 节点保持现有工作流 class type：
 
 卸载节点可以接收可选 `after` 音频依赖，确保生成完成后再终止隔离 worker、释放模型并请求清理显存。
 
+模型加载器提供四个明确档位：`quality_bf16` 是质量优先的生产基线；
+`compiled_bf16` 在 BF16 基础上启用 `torch.compile`；`maximum_bf16` 还要求
+FlashAttention GPT 加速和 BigVGAN CUDA kernel，缺少任一能力都会失败而不是静默降级；
+`reference_fp32` 仅用于质量对照。旧工作流仍可通过 `legacy_custom` 保留原来的独立开关。
+模型信息会报告实际精度、量化格式和加速后端。BF16 属于低精度推理而不是权重量化；
+未经音色相似度、情感控制和可懂度验证的 INT8/INT4 权重不会冒充生产档。
+
 ### Qwen3-ASR 与强制对齐
 
-ASR 模块需要安装公开的 [`DarioFT/ComfyUI-Qwen3-ASR`](https://github.com/DarioFT/ComfyUI-Qwen3-ASR)，由它提供固定版本的 Qwen3-ASR 模型加载器。Hydra InferWorks 提供：
+Hydra InferWorks 现在直接提供 `HydraQwen3ASRModelLoader`，不再依赖另一个
+ComfyUI 节点包来加载模型。安装依赖中固定 `qwen-asr==0.0.6`，模型仍然只从
+ComfyUI 本地模型目录读取。它提供：
 
+- `HydraQwen3ASRModelLoader`：显式选择 BF16 SDPA、BF16 FlashAttention 2、BF16 vLLM 或 FP32 对照档；
 - `HydraQwen3LongAsrTranscribe`：在低能量边界切分长音频并恢复全局时间线；
 - `HydraQwen3ForcedAlign`：使用 ASR 锚点分块对齐调用方锁定文本；
 - `HydraTranscriptReceipt`：把源音频哈希、模型身份、时间戳和分块证据写入不可变 JSON 回执。
 
 模型权重应放在工作流配置的本地路径。生产工作流固定使用 `Qwen/Qwen3-ASR-1.7B` 与 `Qwen/Qwen3-ForcedAligner-0.6B`。
+默认生产档是 `transformers_bf16_sdpa`；FlashAttention 2 与 vLLM 只有在依赖存在并完成
+本机质量/吞吐验证后才切换。当前官方未发布经过 Qwen3-ASR 任务质量验证的量化权重，
+因此 INT8/INT4 不在生产档，回执会明确记录 `quantization=none`，避免把 BF16 错称为量化。
 
 ### HeyGem
 
@@ -93,7 +106,8 @@ Hydra InferWorks 自研集成代码使用 Apache-2.0。仓库中固定的 IndexT
 
 Hydra InferWorks is a unified ComfyUI inference node pack for HydraMatrix. It combines fully local IndexTTS 2.5 speech synthesis, Hydra-owned long-audio Qwen3-ASR/forced-alignment receipt nodes, and the file-backed HeyGem long-form avatar adapter. Capability imports are isolated so one missing optional dependency does not disable the remaining modules.
 
-Install the repository and Python requirements, run `install.py` for the private IndexTTS compatibility environment, then download the official IndexTTS 2.5 weights only after accepting `UPSTREAM_MODEL_LICENSE.txt`. Qwen3-ASR requires the external `DarioFT/ComfyUI-Qwen3-ASR` node pack, while HeyGem requires an existing compatible service.
+Install the repository and Python requirements, run `install.py` for the private IndexTTS compatibility environment, then download the official IndexTTS 2.5 weights only after accepting `UPSTREAM_MODEL_LICENSE.txt`. Hydra InferWorks owns the Qwen3-ASR loader and pins the official `qwen-asr` package; HeyGem still requires an existing compatible service.
 
-Existing `TopTTS25*`, `HydraQwen3*`, `HydraTranscriptReceipt`, and `HydraHeyGemLongformAvatar` class types are preserved for workflow compatibility.
+Production profiles prefer BF16 and explicit optimized attention/compilation backends. Requested acceleration fails closed when unavailable, and every TTS model description or ASR receipt records the actual precision, quantization state, and backend. INT8/INT4 remains outside production admission until model-specific quality evidence exists.
 
+Existing `TopTTS25*`, `HydraQwen3*`, `HydraTranscriptReceipt`, and `HydraHeyGemLongformAvatar` class types are preserved for workflow compatibility; `HydraQwen3ASRModelLoader` is the new unified loader.

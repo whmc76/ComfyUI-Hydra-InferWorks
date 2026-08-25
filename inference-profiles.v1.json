@@ -1,0 +1,86 @@
+{
+  "contract_version": "hydra_inferworks_inference_profiles.v1",
+  "policy": "prefer_the_fastest_reduced_precision_or_quantized_route_that_passes_model_specific_quality_gates",
+  "truth_rules": {
+    "bf16_is_quantization": false,
+    "silent_acceleration_fallback_allowed": false,
+    "unverified_quantized_checkpoint_production_allowed": false
+  },
+  "tts": {
+    "model_id": "IndexTeam/IndexTTS-2.5",
+    "production_default": "quality_bf16",
+    "profiles": {
+      "quality_bf16": {
+        "precision": "bf16",
+        "quantization": "none",
+        "acceleration": [],
+        "admission": "production"
+      },
+      "compiled_bf16": {
+        "precision": "bf16",
+        "quantization": "none",
+        "acceleration": ["torch_compile"],
+        "admission": "candidate",
+        "promotion_requires": ["persistent_model_or_batch_lifecycle", "warm_throughput_gain", "voice_quality_parity"]
+      },
+      "maximum_bf16": {
+        "precision": "bf16",
+        "quantization": "none",
+        "acceleration": ["torch_compile", "gpt_flash_attention", "bigvgan_cuda_kernel"],
+        "admission": "candidate",
+        "promotion_requires": ["flash_attn_available", "cuda_kernel_active", "voice_quality_parity"]
+      },
+      "reference_fp32": {
+        "precision": "fp32",
+        "quantization": "none",
+        "acceleration": [],
+        "admission": "quality_reference"
+      }
+    },
+    "quantized_candidates": {
+      "tensorrt_int8": "not_integrated_or_quality_admitted",
+      "tensorrt_int4": "not_integrated_or_quality_admitted"
+    }
+  },
+  "asr": {
+    "model_id": "Qwen/Qwen3-ASR-1.7B",
+    "forced_aligner_id": "Qwen/Qwen3-ForcedAligner-0.6B",
+    "production_default": "transformers_bf16_sdpa",
+    "profiles": {
+      "transformers_bf16_sdpa": {
+        "precision": "bf16",
+        "quantization": "none",
+        "attention_backend": "sdpa",
+        "admission": "production"
+      },
+      "transformers_bf16_flash_attention_2": {
+        "precision": "bf16",
+        "quantization": "none",
+        "attention_backend": "flash_attention_2",
+        "admission": "candidate",
+        "promotion_requires": ["flash_attn_available", "cer_wer_parity", "timestamp_parity"]
+      },
+      "vllm_bf16": {
+        "precision": "bf16",
+        "quantization": "none",
+        "attention_backend": "vllm_managed",
+        "admission": "candidate",
+        "promotion_requires": ["vllm_available", "batch_throughput_gain", "cer_wer_parity", "timestamp_parity"]
+      },
+      "reference_fp32_eager": {
+        "precision": "fp32",
+        "quantization": "none",
+        "attention_backend": "eager",
+        "admission": "quality_reference"
+      }
+    },
+    "quantized_candidates": {
+      "status": "not_admitted",
+      "reason": "no_official_qwen3_asr_quantized_checkpoint_with_task_quality_evidence"
+    }
+  },
+  "quality_gates": {
+    "tts": ["speaker_similarity", "intelligibility", "emotion_control", "duration_and_artifact_integrity", "warm_and_cold_latency"],
+    "asr": ["cer", "wer", "language_detection", "timestamp_alignment", "short_and_long_audio_throughput"]
+  }
+}

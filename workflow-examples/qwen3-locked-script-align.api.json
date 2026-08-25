@@ -6,14 +6,12 @@
     }
   },
   "2": {
-    "class_type": "Qwen3ASRLoader",
+    "class_type": "HydraQwen3ASRModelLoader",
     "inputs": {
-      "repo_id": "Qwen/Qwen3-ASR-1.7B",
-      "source": "ModelScope",
-      "precision": "bf16",
-      "attention": "auto",
-      "forced_aligner": "Qwen/Qwen3-ForcedAligner-0.6B",
-      "local_model_path": "__HYDRA_LOCAL_MODEL_PATH__"
+      "model_directory": "__HYDRA_LOCAL_MODEL_PATH__",
+      "forced_aligner_directory": "Qwen3-ASR/Qwen3-ForcedAligner-0.6B",
+      "optimization_profile": "transformers_bf16_sdpa",
+      "max_inference_batch_size": 32
     }
   },
   "3": {
@@ -95,4 +93,3 @@
     }
   }
 }
-

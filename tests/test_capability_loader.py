@@ -53,6 +53,7 @@ class CapabilityLoaderTests(unittest.TestCase):
                 "TopTTS25EmotionVector",
                 "TopTTS25Synthesize",
                 "TopTTS25UnloadModel",
+                "HydraQwen3ASRModelLoader",
                 "HydraQwen3LongAsrTranscribe",
                 "HydraQwen3ForcedAlign",
                 "HydraTranscriptReceipt",
@@ -60,7 +61,13 @@ class CapabilityLoaderTests(unittest.TestCase):
             },
         )
 
+    def test_inference_profiles_keep_unverified_quantization_out_of_production(self):
+        profiles = json.loads((ROOT / "inference-profiles.v1.json").read_text(encoding="utf-8"))
+        self.assertEqual(profiles["tts"]["production_default"], "quality_bf16")
+        self.assertEqual(profiles["asr"]["production_default"], "transformers_bf16_sdpa")
+        self.assertFalse(profiles["truth_rules"]["bf16_is_quantization"])
+        self.assertEqual(profiles["asr"]["quantized_candidates"]["status"], "not_admitted")
+
 
 if __name__ == "__main__":
     unittest.main()
-

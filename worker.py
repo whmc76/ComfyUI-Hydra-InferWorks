@@ -1,4 +1,5 @@
 import json
+import importlib.util
 import os
 import random
 import sys
@@ -28,18 +29,25 @@ def reply(payload: dict) -> None:
 def load_model(command: dict):
     from top_tts_vendor.indextts.infer_v2_5 import IndexTTS2
 
-    return IndexTTS2(
+    if command["use_gpt_acceleration"] and importlib.util.find_spec("flash_attn") is None:
+        raise RuntimeError("hydra_indextts25_flash_attention_required")
+    if command["use_torch_compile"] and not hasattr(torch, "compile"):
+        raise RuntimeError("hydra_indextts25_torch_compile_unavailable")
+
+    model = IndexTTS2(
         cfg_path=command["config_path"],
         model_dir=command["model_dir"],
         use_bf16=command["use_bf16"],
         device=command["device"],
-        use_gpt_latent=False,
         use_cuda_kernel=command["use_cuda_kernel"],
         use_deepspeed=False,
-        use_accel=False,
+        use_accel=command["use_gpt_acceleration"],
         use_torch_compile=command["use_torch_compile"],
         use_qwen_emo=command["use_qwen_emo"],
     )
+    if command["use_cuda_kernel"] and not model.use_cuda_kernel:
+        raise RuntimeError("hydra_indextts25_cuda_kernel_activation_failed")
+    return model
 
 
 def synthesize(model, command: dict) -> str:
@@ -93,7 +101,18 @@ def main() -> None:
                 reply({"ok": True, "transformers": transformers.__version__, "engine": IndexTTS2.__name__})
             elif action == "load":
                 model = load_model(command)
-                reply({"ok": True, "device": str(model.device), "precision": "bf16" if model.use_bf16 else "fp32"})
+                reply({
+                    "ok": True,
+                    "device": str(model.device),
+                    "precision": "bf16" if model.use_bf16 else "fp32",
+                    "quantization": "none",
+                    "optimization_profile": command["optimization_profile"],
+                    "acceleration": {
+                        "gpt_flash_attention": bool(model.use_accel),
+                        "torch_compile": bool(model.use_torch_compile),
+                        "bigvgan_cuda_kernel": bool(model.use_cuda_kernel),
+                    },
+                })
             elif action == "synthesize":
                 if model is None:
                     raise RuntimeError("Model is not loaded")
