@@ -1,0 +1,131 @@
+{
+  "contract_version": "hydra_inferworks_qwen3_asr_model_attestations.v1",
+  "models": [
+    {
+      "role": "asr_model_shard_1",
+      "model_id": "Qwen/Qwen3-ASR-1.7B",
+      "relative_path": "Qwen3-ASR/Qwen3-ASR-1.7B/model-00001-of-00002.safetensors",
+      "size_bytes": 4220320824,
+      "sha256": "a4cd1f1a04d90b757dc7f7dd26254e69a013b19e80efe590a83c6a3bde8608d6"
+    },
+    {
+      "role": "asr_model_shard_2",
+      "model_id": "Qwen/Qwen3-ASR-1.7B",
+      "relative_path": "Qwen3-ASR/Qwen3-ASR-1.7B/model-00002-of-00002.safetensors",
+      "size_bytes": 478200688,
+      "sha256": "6e0b9d9e09e2e0238e7ef3cc8a484ab387e91b90f1900bedf88bc92d7929ccfc"
+    },
+    {
+      "role": "asr_config",
+      "model_id": "Qwen/Qwen3-ASR-1.7B",
+      "relative_path": "Qwen3-ASR/Qwen3-ASR-1.7B/config.json",
+      "size_bytes": 6194,
+      "sha256": "2e74a751548b8ad7d7526d29365ad8144c345d8b412b1152d25dc6698452712f"
+    },
+    {
+      "role": "asr_model_index",
+      "model_id": "Qwen/Qwen3-ASR-1.7B",
+      "relative_path": "Qwen3-ASR/Qwen3-ASR-1.7B/model.safetensors.index.json",
+      "size_bytes": 64821,
+      "sha256": "f994739fe38e5210b9e3e8ce6c6307315e2ceac3cb630e7b7414d69dce520f60"
+    },
+    {
+      "role": "forced_aligner_model",
+      "model_id": "Qwen/Qwen3-ForcedAligner-0.6B",
+      "relative_path": "Qwen3-ASR/Qwen3-ForcedAligner-0.6B/model.safetensors",
+      "size_bytes": 1835544544,
+      "sha256": "47831d0e82f96b20e9034dba01a075ee06436654719f6a68289e49f1b65ce0e7"
+    },
+    {
+      "role": "forced_aligner_config",
+      "model_id": "Qwen/Qwen3-ForcedAligner-0.6B",
+      "relative_path": "Qwen3-ASR/Qwen3-ForcedAligner-0.6B/config.json",
+      "size_bytes": 5982,
+      "sha256": "d616c65d46c4b90bdc651b0a0963ea932732241140f337f9bb6b0335a9c8ef09"
+    },
+    {
+      "role": "asr_generation_config",
+      "model_id": "Qwen/Qwen3-ASR-1.7B",
+      "relative_path": "Qwen3-ASR/Qwen3-ASR-1.7B/generation_config.json",
+      "size_bytes": 142,
+      "sha256": "1da527824d81e07118facff437e03f2e24a23311e3bdeb2368973fe77e5f275c"
+    },
+    {
+      "role": "asr_preprocessor_config",
+      "model_id": "Qwen/Qwen3-ASR-1.7B",
+      "relative_path": "Qwen3-ASR/Qwen3-ASR-1.7B/preprocessor_config.json",
+      "size_bytes": 330,
+      "sha256": "45e120a4eda2c20c5d7f2ea9354e63536bf35e27aa573fb7cdf78017b378770d"
+    },
+    {
+      "role": "asr_tokenizer_config",
+      "model_id": "Qwen/Qwen3-ASR-1.7B",
+      "relative_path": "Qwen3-ASR/Qwen3-ASR-1.7B/tokenizer_config.json",
+      "size_bytes": 12487,
+      "sha256": "4942d005604266809309cabc9f4e9cb89ce855d59b14681fdc0e1cc62ea26c4c"
+    },
+    {
+      "role": "asr_tokenizer_vocab",
+      "model_id": "Qwen/Qwen3-ASR-1.7B",
+      "relative_path": "Qwen3-ASR/Qwen3-ASR-1.7B/vocab.json",
+      "size_bytes": 2776833,
+      "sha256": "ca10d7e9fb3ed18575dd1e277a2579c16d108e32f27439684afa0e10b1440910"
+    },
+    {
+      "role": "asr_tokenizer_merges",
+      "model_id": "Qwen/Qwen3-ASR-1.7B",
+      "relative_path": "Qwen3-ASR/Qwen3-ASR-1.7B/merges.txt",
+      "size_bytes": 1671853,
+      "sha256": "8831e4f1a044471340f7c0a83d7bd71306a5b867e95fd870f74d0c5308a904d5"
+    },
+    {
+      "role": "asr_chat_template",
+      "model_id": "Qwen/Qwen3-ASR-1.7B",
+      "relative_path": "Qwen3-ASR/Qwen3-ASR-1.7B/chat_template.json",
+      "size_bytes": 1161,
+      "sha256": "75a8cfca24f00de72d796fbfed6858fc9614ef3dabd8696684cc3bc03a9c58ff"
+    },
+    {
+      "role": "aligner_generation_config",
+      "model_id": "Qwen/Qwen3-ForcedAligner-0.6B",
+      "relative_path": "Qwen3-ASR/Qwen3-ForcedAligner-0.6B/generation_config.json",
+      "size_bytes": 115,
+      "sha256": "948d089b23bca1d214e768d59c4438365665f52ec6d33678f4062206b3fbbb8c"
+    },
+    {
+      "role": "aligner_preprocessor_config",
+      "model_id": "Qwen/Qwen3-ForcedAligner-0.6B",
+      "relative_path": "Qwen3-ASR/Qwen3-ForcedAligner-0.6B/preprocessor_config.json",
+      "size_bytes": 330,
+      "sha256": "45e120a4eda2c20c5d7f2ea9354e63536bf35e27aa573fb7cdf78017b378770d"
+    },
+    {
+      "role": "aligner_tokenizer_config",
+      "model_id": "Qwen/Qwen3-ForcedAligner-0.6B",
+      "relative_path": "Qwen3-ASR/Qwen3-ForcedAligner-0.6B/tokenizer_config.json",
+      "size_bytes": 12666,
+      "sha256": "3ab80063f8511deb9566e6ad438d17b7a6277fcffd52d92854112f19d36bd81c"
+    },
+    {
+      "role": "aligner_tokenizer_vocab",
+      "model_id": "Qwen/Qwen3-ForcedAligner-0.6B",
+      "relative_path": "Qwen3-ASR/Qwen3-ForcedAligner-0.6B/vocab.json",
+      "size_bytes": 2776833,
+      "sha256": "ca10d7e9fb3ed18575dd1e277a2579c16d108e32f27439684afa0e10b1440910"
+    },
+    {
+      "role": "aligner_tokenizer_merges",
+      "model_id": "Qwen/Qwen3-ForcedAligner-0.6B",
+      "relative_path": "Qwen3-ASR/Qwen3-ForcedAligner-0.6B/merges.txt",
+      "size_bytes": 1671853,
+      "sha256": "8831e4f1a044471340f7c0a83d7bd71306a5b867e95fd870f74d0c5308a904d5"
+    },
+    {
+      "role": "aligner_chat_template",
+      "model_id": "Qwen/Qwen3-ForcedAligner-0.6B",
+      "relative_path": "Qwen3-ASR/Qwen3-ForcedAligner-0.6B/chat_template.json",
+      "size_bytes": 1161,
+      "sha256": "75a8cfca24f00de72d796fbfed6858fc9614ef3dabd8696684cc3bc03a9c58ff"
+    }
+  ]
+}

@@ -11,24 +11,27 @@
     "production_default": "quality_bf16",
     "profiles": {
       "quality_bf16": {
-        "precision": "bf16",
+        "precision": "mixed_bf16_fp32",
         "quantization": "none",
+        "stage_precisions": {"gpt": "bf16", "s2mel": "fp32", "bigvgan": "fp32"},
         "acceleration": [],
         "admission": "production"
       },
       "compiled_bf16": {
-        "precision": "bf16",
+        "precision": "mixed_bf16_fp32",
         "quantization": "none",
+        "stage_precisions": {"gpt": "bf16", "s2mel": "fp32_compiled", "bigvgan": "fp32"},
         "acceleration": ["torch_compile"],
         "admission": "candidate",
         "promotion_requires": ["persistent_model_or_batch_lifecycle", "warm_throughput_gain", "voice_quality_parity"]
       },
       "maximum_bf16": {
-        "precision": "bf16",
+        "precision": "mixed_bf16_fp16_fp32",
         "quantization": "none",
         "acceleration": ["torch_compile", "gpt_flash_attention", "bigvgan_cuda_kernel"],
         "admission": "candidate",
-        "promotion_requires": ["flash_attn_available", "cuda_kernel_active", "voice_quality_parity"]
+        "stage_precisions": {"gpt_conditioning": "bf16", "gpt_acceleration": "fp16", "s2mel": "fp32_compiled", "bigvgan": "fp32_cuda_kernel"},
+        "promotion_requires": ["flash_attn_available", "cuda_kernel_active", "stage_precision_receipt", "voice_quality_parity"]
       },
       "reference_fp32": {
         "precision": "fp32",

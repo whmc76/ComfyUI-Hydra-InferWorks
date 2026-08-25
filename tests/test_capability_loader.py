@@ -68,6 +68,16 @@ class CapabilityLoaderTests(unittest.TestCase):
         self.assertFalse(profiles["truth_rules"]["bf16_is_quantization"])
         self.assertEqual(profiles["asr"]["quantized_candidates"]["status"], "not_admitted")
 
+    def test_asr_production_attestations_pin_exact_official_files(self):
+        manifest = json.loads((ROOT / "asr-model-attestations.v1.json").read_text(encoding="utf-8"))
+        self.assertEqual(manifest["contract_version"], "hydra_inferworks_qwen3_asr_model_attestations.v1")
+        self.assertEqual(len(manifest["models"]), 18)
+        self.assertEqual(
+            {entry["model_id"] for entry in manifest["models"]},
+            {"Qwen/Qwen3-ASR-1.7B", "Qwen/Qwen3-ForcedAligner-0.6B"},
+        )
+        self.assertTrue(all(len(entry["sha256"]) == 64 for entry in manifest["models"]))
+
 
 if __name__ == "__main__":
     unittest.main()

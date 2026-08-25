@@ -1,9 +1,10 @@
 {
   "contract_version": "hydra_inferworks_node_manifest.v1",
   "package": "comfyui-hydra-inferworks",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "minimum_comfyui_version": "0.30.0",
   "inference_profiles": "inference-profiles.v1.json",
+  "asr_model_attestations": "asr-model-attestations.v1.json",
   "capabilities": [
     {
       "key": "tts",
@@ -59,6 +60,8 @@
     "index_tts_2_5_inference_is_local_and_offline_after_model_setup",
     "tts_worker_cleanup_is_deterministic",
     "inference_precision_quantization_and_acceleration_are_recorded",
+    "runtime_evidence_is_derived_from_executed_models_not_caller_strings",
+    "production_asr_receipts_require_exact_official_model_attestations",
     "unverified_quantization_profiles_fail_closed",
     "asr_long_audio_timestamps_restore_one_global_timeline",
     "locked_script_alignment_fails_closed_on_anchor_mismatch",

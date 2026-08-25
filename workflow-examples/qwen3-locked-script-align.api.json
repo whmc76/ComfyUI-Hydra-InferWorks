@@ -86,6 +86,10 @@
       "processing_mode": "qwen3_forced_alignment_anchor_chunk_merge",
       "max_chunk_seconds": 75,
       "strict_alignment": true,
+      "execution_evidence": [
+        "4",
+        4
+      ],
       "processing_metadata": [
         "4",
         3

@@ -51,7 +51,7 @@ def main() -> None:
         optimization_profile=args.optimization_profile,
     )
     try:
-        audio, generation_info = nodes.TopTTS25Synthesize().synthesize(
+        execution = nodes.TopTTS25Synthesize().synthesize(
             model=model,
             text=args.text,
             reference_audio=reference_audio,
@@ -60,6 +60,7 @@ def main() -> None:
             emotion_strength=1.0,
             seed=20260811,
         )
+        audio, generation_info = execution["result"]
         args.output.parent.mkdir(parents=True, exist_ok=True)
         sf.write(str(args.output), audio["waveform"][0].T.numpy(), audio["sample_rate"], subtype="PCM_16")
         print(model_info)

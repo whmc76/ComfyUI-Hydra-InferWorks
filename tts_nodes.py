@@ -214,6 +214,7 @@ class TopTTSModel:
     quantization: str
     optimization_profile: str
     acceleration: dict[str, bool]
+    runtime_profile: dict[str, Any]
     emotion_model_loaded: bool
 
     def unload(self) -> None:
@@ -257,7 +258,7 @@ class TopTTS25ModelLoader:
         load_emotion_text_model: bool,
         use_cuda_kernel: bool,
         use_torch_compile: bool,
-        optimization_profile: str = "quality_bf16",
+        optimization_profile: str = "legacy_custom",
     ):
         model_dir = _resolve_model_directory(model_directory)
         missing = _missing_model_files(model_dir, load_emotion_text_model)
@@ -270,7 +271,10 @@ class TopTTS25ModelLoader:
             )
 
         _ensure_runtime()
-        profile = str(optimization_profile or "quality_bf16").strip().lower()
+        # Older serialized workflows do not pass newly-added optional inputs.
+        # Keep the UI default for new graphs while preserving every v1.0
+        # precision and acceleration input when this field is absent.
+        profile = str(optimization_profile or "legacy_custom").strip().lower()
         if profile not in TTS_OPTIMIZATION_PROFILES:
             raise ValueError(f"hydra_indextts25_optimization_profile_invalid:{profile}")
         if profile == "quality_bf16":
@@ -320,6 +324,7 @@ class TopTTS25ModelLoader:
             quantization=worker.info["quantization"],
             optimization_profile=worker.info["optimization_profile"],
             acceleration=worker.info["acceleration"],
+            runtime_profile=worker.info["runtime_profile"],
             emotion_model_loaded=load_emotion_text_model,
         )
         enabled = ",".join(key for key, value in handle.acceleration.items() if value) or "eager"
@@ -470,13 +475,30 @@ class TopTTS25Synthesize:
                 if path and os.path.isfile(path):
                     os.unlink(path)
         duration = audio["waveform"].shape[-1] / audio["sample_rate"]
-        enabled = ",".join(key for key, value in model.acceleration.items() if value) or "eager"
-        info = (
-            f"IndexTTS 2.5 | {language} | {duration:.2f}s | seed {seed} | "
-            f"{model.precision} | quantization={model.quantization} | "
-            f"profile={model.optimization_profile} | acceleration={enabled} | local inference"
+        runtime_profile = response.get("runtime_profile")
+        if not isinstance(runtime_profile, dict):
+            raise RuntimeError("hydra_indextts25_runtime_profile_missing")
+        model.runtime_profile = runtime_profile
+        model.precision = str(runtime_profile.get("precision") or model.precision)
+        model.acceleration = dict(runtime_profile.get("acceleration") or {})
+        info = json.dumps(
+            {
+                "contract_version": "hydra_inferworks_tts_execution.v1",
+                "status": "completed",
+                "language": language,
+                "duration_seconds": round(duration, 6),
+                "seed": int(seed),
+                "sample_rate": int(audio["sample_rate"]),
+                "runtime_profile": runtime_profile,
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
         )
-        return audio, info
+        return {
+            "ui": {"generation_info": [info]},
+            "result": (audio, info),
+        }
 
 
 class TopTTS25UnloadModel:

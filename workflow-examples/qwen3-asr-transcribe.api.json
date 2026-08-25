@@ -58,6 +58,10 @@
       "processing_mode": "qwen3_asr_native_chunk_merge",
       "max_chunk_seconds": 90,
       "strict_alignment": false,
+      "execution_evidence": [
+        "3",
+        4
+      ],
       "processing_metadata": [
         "3",
         3

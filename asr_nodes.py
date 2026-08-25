@@ -3,6 +3,8 @@ import importlib.util
 import json
 import os
 import re
+import sys
+import time
 from difflib import SequenceMatcher
 from pathlib import Path
 
@@ -37,6 +39,57 @@ ASR_OPTIMIZATION_PROFILES = {
         "quantization": "none",
     },
 }
+PLUGIN_DIR = Path(__file__).resolve().parent
+ASR_MODEL_ATTESTATIONS_PATH = PLUGIN_DIR / "asr-model-attestations.v1.json"
+ASR_EXECUTION_EVIDENCE_TYPE = "HYDRA_ASR_EXECUTION_EVIDENCE"
+_FILE_HASH_CACHE = {}
+_ASR_EVIDENCE_ISSUER = object()
+EXPECTED_ASR_ATTESTATION_ROLES = frozenset(
+    {
+        "asr_model_shard_1",
+        "asr_model_shard_2",
+        "asr_config",
+        "asr_model_index",
+        "asr_generation_config",
+        "asr_preprocessor_config",
+        "asr_tokenizer_config",
+        "asr_tokenizer_vocab",
+        "asr_tokenizer_merges",
+        "asr_chat_template",
+        "forced_aligner_model",
+        "forced_aligner_config",
+        "aligner_generation_config",
+        "aligner_preprocessor_config",
+        "aligner_tokenizer_config",
+        "aligner_tokenizer_vocab",
+        "aligner_tokenizer_merges",
+        "aligner_chat_template",
+    }
+)
+
+
+class HydraAsrExecutionEvidence:
+    """Opaque in-process evidence; Comfy API JSON literals cannot construct it."""
+
+    __slots__ = ("_issuer", "_payload")
+
+    def __init__(self, *_args, **_kwargs):
+        raise TypeError("HydraAsrExecutionEvidence is issued only by an executed InferWorks node")
+
+    @classmethod
+    def _issue(cls, payload):
+        instance = object.__new__(cls)
+        instance._issuer = _ASR_EVIDENCE_ISSUER
+        instance._payload = json.loads(json.dumps(payload, ensure_ascii=False))
+        return instance
+
+    def _verified_payload(self):
+        if self._issuer is not _ASR_EVIDENCE_ISSUER:
+            raise ValueError("hydra_transcript_receipt_execution_evidence_issuer_invalid")
+        return json.loads(json.dumps(self._payload, ensure_ascii=False))
+
+    def to_payload(self):
+        return self._verified_payload()
 
 
 def _text(value):
@@ -57,6 +110,140 @@ def _resolve_asr_model_directory(value, default_relative_path):
     if not candidate.is_dir() or not any(candidate.iterdir()):
         raise FileNotFoundError(f"hydra_qwen3_asr_model_directory_missing:{candidate}")
     return candidate
+
+
+def _file_sha256(path):
+    stat = path.stat()
+    cache_key = (str(path), stat.st_size, stat.st_mtime_ns)
+    cached = _FILE_HASH_CACHE.get(cache_key)
+    if cached:
+        return cached
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(8 * 1024 * 1024), b""):
+            digest.update(chunk)
+    value = digest.hexdigest()
+    _FILE_HASH_CACHE[cache_key] = value
+    return value
+
+
+def _attest_asr_model_files(model_path, aligner_path):
+    try:
+        manifest_path = next(
+            path
+            for path in (
+                ASR_MODEL_ATTESTATIONS_PATH,
+                Path(sys.prefix) / ASR_MODEL_ATTESTATIONS_PATH.name,
+            )
+            if path.is_file()
+        )
+        manifest_bytes = manifest_path.read_bytes()
+        manifest = json.loads(manifest_bytes.decode("utf-8"))
+    except (OSError, StopIteration, UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise RuntimeError("hydra_qwen3_asr_attestation_manifest_invalid") from error
+    root = Path(folder_paths.models_dir).resolve()
+    if manifest.get("contract_version") != "hydra_inferworks_qwen3_asr_model_attestations.v1":
+        raise RuntimeError("hydra_qwen3_asr_attestation_contract_invalid")
+    entries = manifest.get("models", [])
+    roles = [_text(entry.get("role")) for entry in entries if isinstance(entry, dict)]
+    if len(roles) != len(set(roles)) or set(roles) != EXPECTED_ASR_ATTESTATION_ROLES:
+        raise RuntimeError("hydra_qwen3_asr_attestation_roles_invalid")
+    expected_model_path = (root / "Qwen3-ASR/Qwen3-ASR-1.7B").resolve()
+    expected_aligner_path = (root / "Qwen3-ASR/Qwen3-ForcedAligner-0.6B").resolve()
+    if model_path != expected_model_path or aligner_path != expected_aligner_path:
+        raise RuntimeError("hydra_qwen3_asr_production_model_identity_untrusted")
+    verified = []
+    for entry in entries:
+        target = (root / _text(entry.get("relative_path"))).resolve()
+        try:
+            target.relative_to(root)
+        except ValueError as error:
+            raise RuntimeError("hydra_qwen3_asr_attestation_path_escape") from error
+        if not target.is_file():
+            raise FileNotFoundError(f"hydra_qwen3_asr_attested_file_missing:{target}")
+        if target.stat().st_size != int(entry.get("size_bytes", -1)):
+            raise RuntimeError(f"hydra_qwen3_asr_attested_file_size_mismatch:{target.name}")
+        digest = _file_sha256(target)
+        if digest != _text(entry.get("sha256")).lower():
+            raise RuntimeError(f"hydra_qwen3_asr_attested_file_sha256_mismatch:{target.name}")
+        verified.append({"role": entry.get("role"), "sha256": digest})
+    if len(verified) != 18:
+        raise RuntimeError("hydra_qwen3_asr_attestation_set_incomplete")
+    return {
+        "contract_version": "hydra_inferworks_qwen3_asr_runtime_attestation.v1",
+        "manifest_sha256": hashlib.sha256(manifest_bytes).hexdigest(),
+        "model_id": "Qwen/Qwen3-ASR-1.7B",
+        "aligner_id": "Qwen/Qwen3-ForcedAligner-0.6B",
+        "files": verified,
+    }
+
+
+def _dtype_name(value):
+    normalized = _text(value).replace("torch.", "")
+    return {
+        "bfloat16": "bf16",
+        "float16": "fp16",
+        "float32": "fp32",
+    }.get(normalized, normalized or "unknown")
+
+
+def _config_attention(config):
+    return _text(
+        getattr(config, "_attn_implementation", None)
+        or getattr(config, "_attn_implementation_internal", None)
+    ) or "unknown"
+
+
+def _config_quantization(config):
+    value = getattr(config, "quantization_config", None)
+    return "none" if value in (None, {}, "") else "configured"
+
+
+def _observed_asr_runtime(model, profile_key, selected, attestation):
+    inner = getattr(model, "model", None)
+    inner_config = getattr(inner, "config", None)
+    aligner = getattr(model, "forced_aligner", None)
+    aligner_inner = getattr(aligner, "model", None)
+    aligner_config = getattr(aligner_inner, "config", None)
+    aligner_dtype = getattr(aligner_inner, "dtype", None)
+    if aligner_dtype is None and aligner_inner is not None:
+        try:
+            aligner_dtype = next(aligner_inner.parameters()).dtype
+        except StopIteration:
+            pass
+    runtime = {
+        "contract_version": "hydra_inferworks_asr_inference_profile.v1",
+        "profile_key": profile_key,
+        "backend": _text(getattr(model, "backend", None)) or "unknown",
+        "precision": _dtype_name(getattr(model, "dtype", None) or getattr(inner, "dtype", None)),
+        "aligner_precision": _dtype_name(aligner_dtype),
+        "quantization": _config_quantization(inner_config),
+        "aligner_quantization": _config_quantization(aligner_config),
+        "attention_backend": _config_attention(inner_config),
+        "aligner_attention_backend": _config_attention(aligner_config),
+        "device": _text(getattr(model, "device", None)),
+        "max_inference_batch_size": int(getattr(model, "max_inference_batch_size", 0)),
+        "model_attestation": attestation,
+        "quality_admission": "candidate",
+    }
+    production_match = (
+        profile_key == "transformers_bf16_sdpa"
+        and runtime["backend"] == "transformers"
+        and runtime["precision"] == "bf16"
+        and runtime["aligner_precision"] == "bf16"
+        and runtime["quantization"] == "none"
+        and runtime["aligner_quantization"] == "none"
+        and runtime["attention_backend"] == "sdpa"
+        and runtime["aligner_attention_backend"] == "sdpa"
+        and isinstance(attestation, dict)
+    )
+    if profile_key == "transformers_bf16_sdpa" and not production_match:
+        raise RuntimeError("hydra_qwen3_asr_production_runtime_attestation_failed")
+    if production_match:
+        runtime["quality_admission"] = "production"
+    elif profile_key == "reference_fp32_eager":
+        runtime["quality_admission"] = "quality_reference"
+    return runtime
 
 
 def _model_inference_profile(model):
@@ -146,6 +333,12 @@ class HydraQwen3ASRModelLoader:
             forced_aligner_directory,
             "Qwen3-ASR/Qwen3-ForcedAligner-0.6B",
         )
+        attestation = None
+        try:
+            attestation = _attest_asr_model_files(model_path, aligner_path)
+        except (FileNotFoundError, RuntimeError):
+            if profile_key == "transformers_bf16_sdpa":
+                raise
         batch_size = max(1, min(128, int(max_inference_batch_size)))
         if selected["backend"] == "vllm":
             model = Qwen3ASRModel.LLM(
@@ -171,25 +364,20 @@ class HydraQwen3ASRModelLoader:
                 device_map=str(device),
                 attn_implementation=attention,
             )
-        runtime_profile = {
-            "contract_version": "hydra_inferworks_asr_inference_profile.v1",
-            "profile_key": profile_key,
-            **selected,
-            "device": str(device),
-            "max_inference_batch_size": batch_size,
-            "quality_admission": (
-                "production" if profile_key == "transformers_bf16_sdpa" else "candidate"
-            ),
-        }
+        runtime_profile = _observed_asr_runtime(model, profile_key, selected, attestation)
         model._hydra_inference_profile = runtime_profile
+        model._hydra_model_identity = {
+            "model_id": attestation.get("model_id") if attestation else None,
+            "aligner_id": attestation.get("aligner_id") if attestation else None,
+        }
         info = " | ".join(
             (
-                "Qwen3-ASR 1.7B",
+                (runtime_profile.get("model_attestation") or {}).get("model_id", "unverified-model"),
                 profile_key,
                 str(device),
-                selected["precision"],
-                f"quantization={selected['quantization']}",
-                f"attention={selected['attention_backend']}",
+                runtime_profile["precision"],
+                f"quantization={runtime_profile['quantization']}",
+                f"attention={runtime_profile['attention_backend']}",
             )
         )
         return model, info
@@ -238,6 +426,51 @@ def _audio_tuple(audio):
     wav = waveform.detach().cpu()[0]
     wav = torch.mean(wav, dim=0) if wav.shape[0] > 1 else wav.squeeze(0)
     return (wav.numpy().astype(np.float32), int(audio["sample_rate"]))
+
+
+def _audio_content_sha256(waveform, sample_rate):
+    digest = hashlib.sha256()
+    digest.update(b"hydra_audio_f32le_mono.v1\0")
+    digest.update(int(sample_rate).to_bytes(8, "little", signed=False))
+    digest.update(np.asarray(waveform, dtype="<f4").tobytes(order="C"))
+    return digest.hexdigest()
+
+
+def _synchronize_model_device(model):
+    device = _text(getattr(model, "device", None))
+    if device.startswith("cuda") and torch.cuda.is_available():
+        torch.cuda.synchronize(device)
+
+
+def _execution_evidence(
+    model,
+    waveform,
+    sample_rate,
+    text,
+    language,
+    timestamps,
+    operation,
+    elapsed_ms,
+    execution_metadata,
+):
+    identity = getattr(model, "_hydra_model_identity", None)
+    profile = _model_inference_profile(model)
+    identity = identity if isinstance(identity, dict) else {}
+    return HydraAsrExecutionEvidence._issue({
+        "contract_version": "hydra_inferworks_asr_execution_evidence.v1",
+        "operation": operation,
+        "model_id": identity.get("model_id"),
+        "aligner_id": identity.get("aligner_id"),
+        "inference_profile": profile,
+        "source_audio_content_sha256": _audio_content_sha256(waveform, sample_rate),
+        "text_sha256": hashlib.sha256(_text(text).encode("utf-8")).hexdigest(),
+        "language_sha256": hashlib.sha256(_text(language).encode("utf-8")).hexdigest(),
+        "timestamps_sha256": hashlib.sha256(_text(timestamps).encode("utf-8")).hexdigest(),
+        "execution_metadata_sha256": hashlib.sha256(
+            json.dumps(execution_metadata, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest(),
+        "execution_elapsed_ms": round(float(elapsed_ms), 3),
+    })
 
 
 def _normalized_characters(value):
@@ -370,8 +603,8 @@ class HydraQwen3LongAsrTranscribe:
             },
         }
 
-    RETURN_TYPES = ("STRING", "STRING", "STRING", "STRING")
-    RETURN_NAMES = ("text", "language", "timestamps", "processing_metadata")
+    RETURN_TYPES = ("STRING", "STRING", "STRING", "STRING", ASR_EXECUTION_EVIDENCE_TYPE)
+    RETURN_NAMES = ("text", "language", "timestamps", "processing_metadata", "execution_evidence")
     FUNCTION = "transcribe"
     CATEGORY = "Hydra InferWorks/ASR"
 
@@ -386,6 +619,8 @@ class HydraQwen3LongAsrTranscribe:
         silence_search_seconds=8,
     ):
         waveform, sample_rate = _audio_tuple(audio)
+        _synchronize_model_device(model)
+        execution_started = time.perf_counter()
         chunk_limit = max(30, min(150, int(max_chunk_seconds)))
         boundaries = _audio_chunk_boundaries(
             waveform,
@@ -433,6 +668,10 @@ class HydraQwen3LongAsrTranscribe:
                 "text_sha256": hashlib.sha256(chunk_text.encode("utf-8")).hexdigest(),
                 "timestamp_count": len(time_stamps),
             })
+        transcript = "".join(texts)
+        timestamp_text = "\n".join(lines)
+        _synchronize_model_device(model)
+        elapsed_ms = (time.perf_counter() - execution_started) * 1000
         metadata = {
             "contract_version": "hydra_qwen3_long_asr_execution.v1",
             "inference_profile": _model_inference_profile(model),
@@ -442,7 +681,18 @@ class HydraQwen3LongAsrTranscribe:
             "split_strategy": "lowest_rms_before_hard_limit",
             "chunks": chunk_receipts,
         }
-        return ("".join(texts), resolved_language, "\n".join(lines), json.dumps(metadata, ensure_ascii=False))
+        evidence = _execution_evidence(
+            model,
+            waveform,
+            sample_rate,
+            transcript,
+            resolved_language,
+            timestamp_text,
+            "transcribe",
+            elapsed_ms,
+            metadata,
+        )
+        return (transcript, resolved_language, timestamp_text, json.dumps(metadata, ensure_ascii=False), evidence)
 
 
 class HydraQwen3ForcedAlign:
@@ -463,8 +713,8 @@ class HydraQwen3ForcedAlign:
             },
         }
 
-    RETURN_TYPES = ("STRING", "STRING", "STRING", "STRING")
-    RETURN_NAMES = ("text", "language", "timestamps", "processing_metadata")
+    RETURN_TYPES = ("STRING", "STRING", "STRING", "STRING", ASR_EXECUTION_EVIDENCE_TYPE)
+    RETURN_NAMES = ("text", "language", "timestamps", "processing_metadata", "execution_evidence")
     FUNCTION = "align"
     CATEGORY = "Hydra InferWorks/ASR"
 
@@ -489,6 +739,8 @@ class HydraQwen3ForcedAlign:
         if aligner is None:
             raise ValueError("hydra_qwen3_forced_aligner_model_missing")
         waveform, sample_rate = _audio_tuple(audio)
+        _synchronize_model_device(model)
+        execution_started = time.perf_counter()
         duration_seconds = len(waveform) / sample_rate
         chunk_limit = max(30, min(170, int(max_chunk_seconds)))
         anchor_error_rate = None
@@ -550,6 +802,9 @@ class HydraQwen3ForcedAlign:
             })
         if not lines:
             raise ValueError("hydra_qwen3_forced_align_timestamps_missing")
+        timestamp_text = "\n".join(lines)
+        _synchronize_model_device(model)
+        elapsed_ms = (time.perf_counter() - execution_started) * 1000
         metadata = {
             "contract_version": "hydra_qwen3_forced_alignment_execution.v1",
             "inference_profile": _model_inference_profile(model),
@@ -560,7 +815,18 @@ class HydraQwen3ForcedAlign:
             "anchor_character_error_rate": round(anchor_error_rate, 6) if anchor_error_rate is not None else None,
             "chunks": alignment_chunk_receipts,
         }
-        return (transcript, resolved_language, "\n".join(lines), json.dumps(metadata, ensure_ascii=False))
+        evidence = _execution_evidence(
+            model,
+            waveform,
+            sample_rate,
+            transcript,
+            resolved_language,
+            timestamp_text,
+            "forced_alignment",
+            elapsed_ms,
+            metadata,
+        )
+        return (transcript, resolved_language, timestamp_text, json.dumps(metadata, ensure_ascii=False), evidence)
 
 
 class HydraTranscriptReceipt:
@@ -581,6 +847,7 @@ class HydraTranscriptReceipt:
                 "processing_mode": ("STRING", {"default": "qwen3_asr_native_chunk_merge"}),
                 "max_chunk_seconds": ("INT", {"default": 180, "min": 30, "max": 1200}),
                 "strict_alignment": ("BOOLEAN", {"default": False}),
+                "execution_evidence": (ASR_EXECUTION_EVIDENCE_TYPE,),
                 "processing_metadata": ("STRING", {"default": "", "multiline": True, "forceInput": True}),
             },
         }
@@ -590,6 +857,12 @@ class HydraTranscriptReceipt:
     FUNCTION = "write_receipt"
     CATEGORY = "Hydra InferWorks/ASR"
     OUTPUT_NODE = True
+
+    @classmethod
+    def VALIDATE_INPUTS(cls, execution_evidence=None, **_kwargs):
+        if execution_evidence is None or isinstance(execution_evidence, list):
+            return True
+        return "Hydra ASR execution evidence must be connected from the transcribe or forced-align node"
 
     def write_receipt(
         self,
@@ -604,6 +877,7 @@ class HydraTranscriptReceipt:
         processing_mode="qwen3_asr_native_chunk_merge",
         max_chunk_seconds=180,
         strict_alignment=False,
+        execution_evidence=None,
         processing_metadata="",
     ):
         transcript = _text(text)
@@ -624,21 +898,78 @@ class HydraTranscriptReceipt:
                 execution_details = json.loads(_text(processing_metadata))
             except json.JSONDecodeError as error:
                 raise ValueError("hydra_transcript_receipt_processing_metadata_invalid") from error
+        verified_evidence = None
+        if execution_evidence is not None:
+            if type(execution_evidence) is not HydraAsrExecutionEvidence:
+                raise ValueError("hydra_transcript_receipt_execution_evidence_invalid")
+            verified_evidence = execution_evidence._verified_payload()
+            if verified_evidence.get("contract_version") != "hydra_inferworks_asr_execution_evidence.v1":
+                raise ValueError("hydra_transcript_receipt_execution_evidence_contract_invalid")
+            expected_hashes = {
+                "text_sha256": hashlib.sha256(transcript.encode("utf-8")).hexdigest(),
+                "language_sha256": hashlib.sha256(_text(language).encode("utf-8")).hexdigest(),
+                "timestamps_sha256": hashlib.sha256(_text(timestamps).encode("utf-8")).hexdigest(),
+            }
+            for field, expected in expected_hashes.items():
+                if _text(verified_evidence.get(field)).lower() != expected:
+                    raise ValueError(f"hydra_transcript_receipt_execution_evidence_{field}_mismatch")
+            if audio is None:
+                raise ValueError("hydra_transcript_receipt_execution_evidence_audio_required")
+            observed_audio_hash = _audio_content_sha256(waveform, sample_rate)
+            if _text(verified_evidence.get("source_audio_content_sha256")).lower() != observed_audio_hash:
+                raise ValueError("hydra_transcript_receipt_execution_evidence_audio_mismatch")
+            evidence_model_id = _text(verified_evidence.get("model_id"))
+            evidence_aligner_id = _text(verified_evidence.get("aligner_id"))
+            if _text(model_id) and _text(model_id) != evidence_model_id:
+                raise ValueError("hydra_transcript_receipt_model_identity_mismatch")
+            if _text(aligner_id) and _text(aligner_id) != evidence_aligner_id:
+                raise ValueError("hydra_transcript_receipt_aligner_identity_mismatch")
+            normalized_mode = _text(processing_mode).lower()
+            expected_operation = (
+                "forced_alignment"
+                if bool(strict_alignment) or "forced_align" in normalized_mode
+                else "transcribe"
+            )
+            if _text(verified_evidence.get("operation")) != expected_operation:
+                raise ValueError("hydra_transcript_receipt_execution_operation_mismatch")
+            expected_mode = (
+                "qwen3_forced_alignment_anchor_chunk_merge"
+                if expected_operation == "forced_alignment"
+                else "qwen3_asr_native_chunk_merge"
+            )
+            if normalized_mode != expected_mode:
+                raise ValueError("hydra_transcript_receipt_processing_mode_mismatch")
+            if bool(strict_alignment) != (expected_operation == "forced_alignment"):
+                raise ValueError("hydra_transcript_receipt_strict_alignment_mismatch")
+            if not isinstance(execution_details, dict):
+                raise ValueError("hydra_transcript_receipt_execution_metadata_required")
+            metadata_hash = hashlib.sha256(
+                json.dumps(execution_details, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+            ).hexdigest()
+            if _text(verified_evidence.get("execution_metadata_sha256")) != metadata_hash:
+                raise ValueError("hydra_transcript_receipt_execution_metadata_mismatch")
+        verified_profile = verified_evidence.get("inference_profile") if verified_evidence else None
+        production_verified = (
+            isinstance(verified_profile, dict)
+            and verified_profile.get("quality_admission") == "production"
+            and _text(verified_evidence.get("model_id")) == "Qwen/Qwen3-ASR-1.7B"
+            and _text(verified_evidence.get("aligner_id")) == "Qwen/Qwen3-ForcedAligner-0.6B"
+        )
         payload = {
             "contract_version": "hydra_comfyui_qwen3_asr_transcript_receipt.v1",
-            "status": "completed",
+            "status": "completed" if production_verified else "completed_unverified",
             "source_audio_sha256": source_hash,
-            "model_id": _text(model_id),
-            "aligner_id": _text(aligner_id) or None,
+            "source_audio_sha256_provenance": "caller_claim_cross_check_required",
+            "source_audio_content_sha256": (
+                verified_evidence.get("source_audio_content_sha256") if verified_evidence else None
+            ),
+            "model_id": verified_evidence.get("model_id") if verified_evidence else None,
+            "aligner_id": verified_evidence.get("aligner_id") if verified_evidence else None,
             "language": _text(language) or None,
             "text": transcript,
             "timestamps_present": bool(segments),
             "segments": segments,
-            "inference_profile": (
-                execution_details.get("inference_profile")
-                if isinstance(execution_details, dict)
-                else None
-            ),
+            "inference_profile": verified_profile,
             "long_audio_processing": {
                 "processing_mode": _text(processing_mode) or "qwen3_asr_native_chunk_merge",
                 "source_duration_seconds": round(source_duration_seconds, 6) if source_duration_seconds is not None else None,
@@ -650,6 +981,9 @@ class HydraTranscriptReceipt:
                 "strict_locked_script_alignment": bool(strict_alignment),
                 "last_timestamp_seconds": segments[-1]["end_seconds"] if segments else None,
                 "execution_details": execution_details,
+                "execution_evidence": verified_evidence,
+                "claimed_model_id": _text(model_id) or None,
+                "claimed_aligner_id": _text(aligner_id) or None,
             },
         }
         canonical = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))

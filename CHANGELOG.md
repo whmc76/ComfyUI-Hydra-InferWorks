@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.1.1 - 2026-08-25
+
+- Preserve v1.0 TTS precision and acceleration inputs when an older workflow has no optimization-profile field.
+- Fail BF16 profiles closed unless CUDA BF16 actually activates, and distinguish requested, wrapped, and executed acceleration.
+- Report the accelerated GPT stage as FP16/mixed precision instead of mislabeling the full maximum profile as BF16.
+- Write the observed TTS runtime profile into ComfyUI history as `hydra_inferworks_tts_execution.v1` evidence.
+- Attest the exact official Qwen3-ASR 1.7B and ForcedAligner 0.6B weights, configs, processors, and tokenizers before granting production admission.
+- Bind typed ASR execution evidence to the audio content, transcript, language, timestamps, actual runtime profile, and attested model identity.
+- Downgrade legacy caller-provided ASR metadata to `completed_unverified` instead of accepting it as production runtime truth.
+
 ## 1.1.0 - 2026-08-25
 
 - Add explicit IndexTTS 2.5 quality, compiled, maximum-acceleration, and FP32 reference profiles.

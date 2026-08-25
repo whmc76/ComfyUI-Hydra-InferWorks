@@ -68,7 +68,7 @@ class HydraAudioNodeTests(unittest.TestCase):
             torch.full((200,), 3.0),
         ]).reshape(1, 1, 2000)
         model = _AsrModel()
-        text, language, timestamps, metadata_json = HydraQwen3LongAsrTranscribe().transcribe(
+        text, language, timestamps, metadata_json, evidence = HydraQwen3LongAsrTranscribe().transcribe(
             model,
             {"waveform": waveform, "sample_rate": 10},
             language="Chinese",
@@ -84,6 +84,7 @@ class HydraAudioNodeTests(unittest.TestCase):
         self.assertEqual(len(timestamps.splitlines()), 3)
         self.assertTrue(timestamps.splitlines()[-1].endswith("片段3"))
         self.assertTrue(text.endswith("片段3"))
+        self.assertEqual(evidence.to_payload()["operation"], "transcribe")
 
     def test_long_locked_script_alignment_chunks_then_restores_global_timeline(self):
         audio = {
@@ -91,7 +92,7 @@ class HydraAudioNodeTests(unittest.TestCase):
             "sample_rate": 10,
         }
         locked_text = "甲乙丙丁戊己庚辛"
-        text, language, timestamps, metadata_json = HydraQwen3ForcedAlign().align(
+        text, language, timestamps, metadata_json, evidence = HydraQwen3ForcedAlign().align(
             SimpleNamespace(forced_aligner=_Aligner()),
             audio,
             locked_text,
@@ -108,6 +109,7 @@ class HydraAudioNodeTests(unittest.TestCase):
         self.assertTrue(lines[0].startswith("0.000-"))
         self.assertTrue(lines[-1].startswith("175.000-200.000:"))
         self.assertEqual(__import__("json").loads(metadata_json)["actual_chunk_count"], 4)
+        self.assertEqual(evidence.to_payload()["operation"], "forced_alignment")
 
     def test_long_locked_script_alignment_fails_closed_when_asr_anchors_disagree(self):
         audio = {
@@ -165,6 +167,29 @@ class HydraAudioNodeTests(unittest.TestCase):
                 "quality_admission": "production",
             },
         }
+        audio = {
+            "waveform": torch.zeros((1, 1, 16), dtype=torch.float32),
+            "sample_rate": 16,
+        }
+        waveform, sample_rate = _MODULE._audio_tuple(audio)
+        model = SimpleNamespace(
+            _hydra_model_identity={
+                "model_id": "Qwen/Qwen3-ASR-1.7B",
+                "aligner_id": "Qwen/Qwen3-ForcedAligner-0.6B",
+            },
+            _hydra_inference_profile=metadata["inference_profile"],
+        )
+        evidence = _MODULE._execution_evidence(
+            model,
+            waveform,
+            sample_rate,
+            "甲",
+            "Chinese",
+            "0-1: 甲",
+            "transcribe",
+            1.0,
+            metadata,
+        )
         result = HydraTranscriptReceipt().write_receipt(
             "甲",
             "Chinese",
@@ -173,14 +198,67 @@ class HydraAudioNodeTests(unittest.TestCase):
             "b" * 64,
             "Qwen/Qwen3-ASR-1.7B",
             "Qwen/Qwen3-ForcedAligner-0.6B",
+            audio=audio,
+            execution_evidence=evidence,
             processing_metadata=__import__("json").dumps(metadata),
         )
         payload = __import__("json").loads(Path(result["result"][0]).read_text(encoding="utf-8"))
         self.assertEqual(payload["inference_profile"]["precision"], "bf16")
         self.assertEqual(payload["inference_profile"]["attention_backend"], "sdpa")
         self.assertEqual(payload["inference_profile"]["quantization"], "none")
+        self.assertEqual(payload["status"], "completed")
+
+    def test_receipt_rejects_literal_dict_and_operation_mismatch(self):
+        audio = {"waveform": torch.zeros((1, 1, 16), dtype=torch.float32), "sample_rate": 16}
+        metadata = {"contract_version": "hydra_qwen3_long_asr_execution.v1"}
+        with self.assertRaisesRegex(ValueError, "execution_evidence_invalid"):
+            HydraTranscriptReceipt().write_receipt(
+                "甲", "Chinese", "0-1: 甲", "hydramatrix/test/forged", "d" * 64,
+                "Qwen/Qwen3-ASR-1.7B", "Qwen/Qwen3-ForcedAligner-0.6B",
+                audio=audio,
+                execution_evidence={"quality_admission": "production"},
+                processing_metadata=__import__("json").dumps(metadata),
+            )
+        waveform, sample_rate = _MODULE._audio_tuple(audio)
+        profile = {
+            "contract_version": "hydra_inferworks_asr_inference_profile.v1",
+            "profile_key": "transformers_bf16_sdpa",
+            "precision": "bf16",
+            "quality_admission": "production",
+        }
+        model = SimpleNamespace(
+            _hydra_model_identity={"model_id": "Qwen/Qwen3-ASR-1.7B", "aligner_id": "Qwen/Qwen3-ForcedAligner-0.6B"},
+            _hydra_inference_profile=profile,
+        )
+        evidence = _MODULE._execution_evidence(
+            model, waveform, sample_rate, "甲", "Chinese", "0-1: 甲", "transcribe", 1.0, metadata,
+        )
+        with self.assertRaisesRegex(ValueError, "execution_operation_mismatch"):
+            HydraTranscriptReceipt().write_receipt(
+                "甲", "Chinese", "0-1: 甲", "hydramatrix/test/operation", "e" * 64,
+                "Qwen/Qwen3-ASR-1.7B", "Qwen/Qwen3-ForcedAligner-0.6B",
+                audio=audio,
+                execution_evidence=evidence,
+                processing_metadata=__import__("json").dumps(metadata),
+                processing_mode="qwen3_forced_alignment_anchor_chunk_merge",
+                strict_alignment=True,
+            )
+
+    def test_receipt_without_typed_execution_evidence_is_unverified(self):
+        result = HydraTranscriptReceipt().write_receipt(
+            "甲",
+            "Chinese",
+            "0-1: 甲",
+            "hydramatrix/test/unverified-profile",
+            "c" * 64,
+            "Qwen/Qwen3-ASR-1.7B",
+            "Qwen/Qwen3-ForcedAligner-0.6B",
+            processing_metadata=__import__("json").dumps({"inference_profile": {"quality_admission": "production"}}),
+        )
+        payload = __import__("json").loads(Path(result["result"][0]).read_text(encoding="utf-8"))
+        self.assertEqual(payload["status"], "completed_unverified")
+        self.assertIsNone(payload["inference_profile"])
 
 
 if __name__ == "__main__":
     unittest.main()
-
