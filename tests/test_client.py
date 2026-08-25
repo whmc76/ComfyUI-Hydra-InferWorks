@@ -85,7 +85,12 @@ def test_external_service_gpu_release_is_explicit_and_receipted():
         "code": 10000,
         "success": True,
         "msg": "released",
-        "data": {"cuda_empty_cache": True},
+        "data": {
+            "error": "",
+            "cuda_available": True,
+            "cuda_empty_cache": True,
+            "cuda_ipc_collect": True,
+        },
     }
     transport = ScriptedTransport([response])
     client = HeyGemClient(endpoint(), transport=transport)
@@ -112,3 +117,74 @@ def test_external_service_gpu_release_fails_closed_without_provider_acceptance()
 
     with pytest.raises(HeyGemClientError, match="heygem_gpu_release_rejected"):
         client.release_gpu()
+
+
+def test_external_service_gpu_release_fails_closed_on_provider_cleanup_error():
+    transport = ScriptedTransport(
+        [
+            {
+                "code": 10000,
+                "success": True,
+                "msg": "released",
+                "data": {
+                    "error": "torch_cleanup_failed:CUDA error",
+                    "cuda_available": True,
+                    "cuda_empty_cache": False,
+                    "cuda_ipc_collect": False,
+                },
+            }
+        ]
+    )
+    client = HeyGemClient(endpoint(), transport=transport)
+
+    with pytest.raises(HeyGemClientError, match="torch_cleanup_failed:CUDA error"):
+        client.release_gpu()
+
+
+@pytest.mark.parametrize(
+    ("cuda_empty_cache", "cuda_ipc_collect"),
+    [(False, True), (True, False), (False, False)],
+)
+def test_external_service_gpu_release_requires_complete_cuda_cleanup(
+    cuda_empty_cache,
+    cuda_ipc_collect,
+):
+    transport = ScriptedTransport(
+        [
+            {
+                "code": 10000,
+                "success": True,
+                "msg": "released",
+                "data": {
+                    "error": "",
+                    "cuda_available": True,
+                    "cuda_empty_cache": cuda_empty_cache,
+                    "cuda_ipc_collect": cuda_ipc_collect,
+                },
+            }
+        ]
+    )
+    client = HeyGemClient(endpoint(), transport=transport)
+
+    with pytest.raises(HeyGemClientError, match="cuda_cleanup_incomplete"):
+        client.release_gpu()
+
+
+def test_external_service_gpu_release_does_not_require_cuda_flags_without_cuda():
+    response = {
+        "code": 10000,
+        "success": True,
+        "msg": "released",
+        "data": {
+            "error": "",
+            "cuda_available": False,
+            "cuda_empty_cache": False,
+            "cuda_ipc_collect": False,
+        },
+    }
+    client = HeyGemClient(endpoint(), transport=ScriptedTransport([response]))
+
+    receipt = client.release_gpu()
+
+    assert receipt.accepted is True
+    assert receipt.response == response

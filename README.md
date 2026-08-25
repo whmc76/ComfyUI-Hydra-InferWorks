@@ -86,7 +86,7 @@ ComfyUI 本地模型目录读取。它提供：
 - 调用方提供的安全 `job_code`；
 - 文件型结果、SHA-256、服务响应和生命周期回执；
 - 任务结束后可选停止精确容器，或通过 HeyGem 服务的 GPU release API 释放模型显存；
-- 当 ComfyUI 自身运行在容器中时，可使用外部 supervisor 管理 HeyGem，并通过 release API 回收显存，无需把 Docker socket 或 Docker CLI 暴露给插件容器。
+- 当 ComfyUI 自身运行在容器中时，可使用外部 supervisor 管理 HeyGem，并通过 release API 回收显存，无需把 Docker socket 或 Docker CLI 暴露给插件容器；provider 返回非空清理错误时会失败关闭，provider 确认 CUDA 可用时还必须明确确认 cache 与 IPC 清理均成功。
 
 它不包含 HeyGem 本体。部署方仍需准备 HeyGem 兼容的 submit/query 服务和共享挂载目录。
 
@@ -113,6 +113,6 @@ Hydra InferWorks is a unified ComfyUI inference node pack for HydraMatrix. It co
 
 Install the repository and Python requirements, run `install.py` for the private IndexTTS compatibility environment, then download the official IndexTTS 2.5 weights only after accepting `UPSTREAM_MODEL_LICENSE.txt`. Hydra InferWorks owns the Qwen3-ASR loader and pins the official `qwen-asr` package; HeyGem still requires an existing compatible service.
 
-Production profiles prefer BF16 and explicit optimized attention/compilation backends. Requested acceleration fails closed when unavailable. TTS generation reports the executed runtime profile, while production ASR receipts require typed execution evidence and exact official model-file attestations instead of trusting caller-provided metadata. INT8/INT4 remains outside production admission until model-specific quality evidence exists.
+Production profiles prefer BF16 and explicit optimized attention/compilation backends. Requested acceleration fails closed when unavailable. TTS generation reports the executed runtime profile, while production ASR receipts require typed execution evidence and exact official model-file attestations instead of trusting caller-provided metadata. INT8/INT4 remains outside production admission until model-specific quality evidence exists. HeyGem GPU release receipts reject non-empty provider cleanup errors and, when CUDA is available, require explicit success for both cache and IPC cleanup.
 
 Existing `TopTTS25*`, `HydraQwen3*`, `HydraTranscriptReceipt`, and `HydraHeyGemLongformAvatar` class types are preserved for workflow compatibility; `HydraQwen3ASRModelLoader` is the new unified loader.

@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.1.4 - 2026-08-26
+
+- Reject a HeyGem GPU release response when the provider reports a non-empty cleanup error.
+- When the provider reports CUDA as available, require both CUDA cache and IPC cleanup to be
+  explicitly accepted before emitting a successful GPU release receipt.
+
+## 1.1.3 - 2026-08-25
+
+- Let externally supervised HeyGem deployments release service GPU memory after artifact
+  materialization without exposing Docker control to the ComfyUI container.
+- Persist the requested path and exact provider response in the durable HeyGem receipt.
+
 ## 1.1.2 - 2026-08-25
 
 - Install the lightweight `soundfile` import dependency in the public CPU CI matrix so

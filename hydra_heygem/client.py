@@ -262,11 +262,28 @@ class HeyGemClient:
             payload={},
             timeout_seconds=max(float(timeout_seconds), 0.1),
         )
-        accepted = _read_code(response) == 10000 and response.get("success") is True
+        data = _read_data(response)
+        cleanup_error = str(data.get("error") or "").strip()
+        cuda_available = data.get("cuda_available") is True
+        cuda_cleanup_accepted = not cuda_available or (
+            data.get("cuda_empty_cache") is True
+            and data.get("cuda_ipc_collect") is True
+        )
+        accepted = (
+            _read_code(response) == 10000
+            and response.get("success") is True
+            and not cleanup_error
+            and cuda_cleanup_accepted
+        )
         if not accepted:
             message = response.get("msg") or response.get("message") or "unknown"
+            cleanup_detail = cleanup_error or (
+                "cuda_cleanup_incomplete" if cuda_available and not cuda_cleanup_accepted else ""
+            )
+            cleanup_detail_suffix = f":{cleanup_detail}" if cleanup_detail else ""
             raise HeyGemClientError(
                 f"heygem_gpu_release_rejected:{_read_code(response)}:{message}"
+                f"{cleanup_detail_suffix}"
             )
         return HeyGemGpuReleaseReceipt(
             path=normalized_path,
