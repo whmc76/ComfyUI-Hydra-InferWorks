@@ -1,35 +1,67 @@
 {
-  "contract_version": "hydra_comfyui_heygem_node_manifest.v1",
-  "package": "comfyui-hydra-heygem",
-  "version": "0.2.0",
+  "contract_version": "hydra_inferworks_node_manifest.v1",
+  "package": "comfyui-hydra-inferworks",
+  "version": "1.0.0",
   "minimum_comfyui_version": "0.30.0",
-  "nodes": [
+  "capabilities": [
     {
-      "class_type": "HydraHeyGemLongformAvatar",
-      "category": "HydraMatrix/avatar",
-      "inputs": {
-        "audio": "AUDIO",
-        "reference_video": "VIDEO",
-        "job_code": "STRING",
-        "service_url": "STRING",
-        "service_host": "STRING",
-        "service_port": "INT",
-        "shared_host_root": "STRING",
-        "container_data_root": "STRING"
-      },
-      "outputs": [
-        "VIDEO",
-        "STRING",
-        "STRING"
+      "key": "tts",
+      "provider": "IndexTeam/IndexTTS-2.5",
+      "model_weights_bundled": false,
+      "nodes": [
+        "TopTTS25ModelLoader",
+        "TopTTS25EmotionVector",
+        "TopTTS25Synthesize",
+        "TopTTS25UnloadModel"
+      ]
+    },
+    {
+      "key": "asr",
+      "provider": "Qwen/Qwen3-ASR-1.7B + Qwen/Qwen3-ForcedAligner-0.6B",
+      "external_node_dependency": "DarioFT/ComfyUI-Qwen3-ASR",
+      "model_weights_bundled": false,
+      "nodes": [
+        "HydraQwen3LongAsrTranscribe",
+        "HydraQwen3ForcedAlign",
+        "HydraTranscriptReceipt"
+      ]
+    },
+    {
+      "key": "heygem",
+      "provider": "HeyGem-compatible service",
+      "service_bundled": false,
+      "nodes": [
+        "HydraHeyGemLongformAvatar"
       ]
     }
   ],
+  "compatibility": {
+    "preserved_class_types": [
+      "TopTTS25ModelLoader",
+      "TopTTS25EmotionVector",
+      "TopTTS25Synthesize",
+      "TopTTS25UnloadModel",
+      "HydraQwen3LongAsrTranscribe",
+      "HydraQwen3ForcedAlign",
+      "HydraTranscriptReceipt",
+      "HydraHeyGemLongformAvatar"
+    ],
+    "supersedes_packages": [
+      "ComfyUI-Top-TTS",
+      "ComfyUI-Hydra-Audio",
+      "ComfyUI-Hydra-HeyGem"
+    ]
+  },
   "invariants": [
-    "service_port_is_runtime_configurable",
+    "capability_import_failures_are_isolated",
+    "index_tts_2_5_inference_is_local_and_offline_after_model_setup",
+    "tts_worker_cleanup_is_deterministic",
+    "asr_long_audio_timestamps_restore_one_global_timeline",
+    "locked_script_alignment_fails_closed_on_anchor_mismatch",
+    "heygem_service_endpoint_is_runtime_configurable",
     "long_video_output_remains_file_backed",
-    "shared_mount_path_traversal_is_rejected",
-    "provider_failure_is_fail_closed",
     "caller_job_identity_correlates_prompt_receipt_and_artifact",
-    "receipt_contains_artifact_hash"
+    "receipts_bind_artifacts_to_sha256"
   ]
 }
+

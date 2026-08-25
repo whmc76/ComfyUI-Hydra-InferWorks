@@ -1,0 +1,4 @@
+.git/**
+.github/**
+examples/**
+python_deps/**

@@ -168,7 +168,7 @@ class HydraHeyGemLongformAvatar(io.ComfyNode):
         return io.Schema(
             node_id="HydraHeyGemLongformAvatar",
             display_name="Hydra HeyGem Long-form Avatar",
-            category="HydraMatrix/avatar",
+            category="Hydra InferWorks/Avatar",
             description=(
                 "Generate a long-form HeyGem avatar through a configurable service endpoint. "
                 "The result remains file-backed and is never expanded into an IMAGE frame tensor."
@@ -407,5 +407,5 @@ async def comfy_entrypoint() -> HydraHeyGemExtension:
 
 NODE_CLASS_MAPPINGS = {"HydraHeyGemLongformAvatar": HydraHeyGemLongformAvatar}
 NODE_DISPLAY_NAME_MAPPINGS = {
-    "HydraHeyGemLongformAvatar": "Hydra HeyGem Long-form Avatar"
+    "HydraHeyGemLongformAvatar": "Hydra InferWorks · HeyGem Long-form Avatar"
 }

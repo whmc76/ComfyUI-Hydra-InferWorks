@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.0.0 - 2026-08-25
+
+- Rename the unified public node pack to Hydra InferWorks.
+- Merge the production IndexTTS 2.5 implementation from ComfyUI Top TTS.
+- Make deterministic IndexTTS worker cleanup and dependency-ordered unload part of the released plugin.
+- Add Hydra long-audio Qwen3-ASR, locked-script forced alignment, and immutable transcript receipt nodes.
+- Preserve all existing Top TTS and HeyGem class types for workflow compatibility.
+- Isolate TTS, ASR, and HeyGem imports so an unavailable optional capability does not disable the others.
+- Retain the file-backed, configurable-endpoint HeyGem node and its durable receipt contract.
+
 ## 0.2.0
 
 - Add a caller-owned, path-safe `job_code` input for deterministic prompt, receipt, and artifact correlation.

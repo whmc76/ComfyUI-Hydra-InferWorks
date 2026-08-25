@@ -1,109 +1,99 @@
-# ComfyUI-Hydra-HeyGem
+# Hydra InferWorks for ComfyUI
 
-Hydra-owned ComfyUI nodes for long-form, exact-audio HeyGem avatar generation.
+[中文](#中文) · [English](#english)
 
-This project keeps ComfyUI as the workflow and GPU scheduling entry point while
-allowing HeyGem to remain in an isolated service or Docker container. It does
-not bundle HeyGem, its models, or a container image.
+Hydra InferWorks 是 HydraMatrix 的统一 ComfyUI 推理插件。一个插件提供三组彼此隔离的能力：
 
-## Why this node exists
+- **TTS**：IndexTTS 2.5 本地推理、零样本音色克隆、多语言与情感控制；
+- **ASR**：Qwen3-ASR 长音频转写、锁定脚本强制对齐和不可变 JSON 回执；
+- **Avatar**：通过可配置服务端点执行 HeyGem 长视频数字人生成，并保留文件与哈希回执。
 
-Existing HeyGem nodes commonly start a fixed container on a fixed port and
-expand the completed video into an `IMAGE` tensor. That is unsafe for long-form
-production. `HydraHeyGemLongformAvatar` instead:
+某个可选能力缺少依赖时，只禁用该能力；其他已满足依赖的节点仍可加载。插件不包含模型权重、HeyGem 服务或容器镜像。
 
-- accepts ComfyUI's native file-backed `VIDEO` plus the exact `AUDIO` waveform;
-- resolves a fully configurable service URL, host, and port;
-- can use an externally managed service or start/stop an existing Docker container;
-- unloads resident ComfyUI models before handing the GPU to HeyGem;
-- stages inputs through an explicitly configured shared host/container mount;
-- returns a file-backed `VIDEO`, the artifact path, and a JSON receipt that is also atomically persisted under `<shared_host_root>/receipts`;
-- accepts an optional safe caller-owned `job_code`, allowing Hydra to deterministically correlate a ComfyUI prompt with `<shared_host_root>/receipts/<job_code>.json` and the final artifact;
-- rejects invalid endpoints, path traversal, empty artifacts, and provider failure.
+## 中文
 
-## Requirements
+### 安装
 
-- ComfyUI 0.30.0 or later.
-- A working HeyGem-compatible service exposing submit and query routes.
-- A host directory mounted into the service container, when container paths are required.
-- Docker CLI only when `lifecycle_mode=docker_existing_container` is selected.
-
-## Install
+在 `ComfyUI/custom_nodes` 中执行：
 
 ```bash
-cd ComfyUI/custom_nodes
-git clone https://github.com/whmc76/ComfyUI-Hydra-HeyGem.git
+git clone https://github.com/whmc76/ComfyUI-Hydra-InferWorks.git
+python -m pip install -r ComfyUI-Hydra-InferWorks/requirements.txt
+python ComfyUI-Hydra-InferWorks/install.py
 ```
 
-Restart ComfyUI with custom nodes enabled. The node appears under
-`HydraMatrix/avatar` as **Hydra HeyGem Long-form Avatar**.
+Windows 便携版可以把 `python` 替换为 `..\..\python_embeded\python.exe`。
+`install.py` 将 IndexTTS 2.5 要求的 `transformers==4.52.1` 安装到插件私有目录，不替换 ComfyUI 的全局 Transformers。
 
-## Endpoint and port resolution
+从旧插件迁移时，不要同时加载 `ComfyUI-Top-TTS`、`ComfyUI-Hydra-HeyGem` 与 Hydra InferWorks；它们保留相同节点 class type，重复加载会产生节点冲突。旧工作流无需改节点 ID。
 
-No port is part of the node's fixed contract. Resolution precedence is:
+### IndexTTS 2.5
 
-1. `service_url` supplied on the node, such as `http://127.0.0.1:59202`.
-2. Explicit `service_host` and/or `service_port` supplied on the node.
-3. `HYDRA_HEYGEM_SERVICE_URL`, `HYDRA_AVATAR_SERVICE_URL`, `AVATAR_SERVICE_URL`, or `HEYGEM_SERVICE_URL`.
-4. `HYDRA_HEYGEM_HOST`, `HYDRA_HEYGEM_PORT`, and `HYDRA_HEYGEM_SCHEME`.
-5. Compatibility defaults only when nothing is configured.
+先阅读 `UPSTREAM_MODEL_LICENSE.txt`，接受上游模型协议后下载官方权重：
 
-`submit_path`, `query_path`, and `health_path` are also editable. With
-`health_path=auto`, the node probes `query_path?code=healthcheck`.
-
-Example:
-
-```powershell
-$env:HYDRA_HEYGEM_SERVICE_URL = 'http://127.0.0.1:49202'
-$env:HYDRA_HEYGEM_SHARED_HOST_ROOT = 'D:\duix_avatar_data\face2face'
-$env:HYDRA_HEYGEM_CONTAINER_DATA_ROOT = '/code/data'
-$env:HYDRA_HEYGEM_CONTAINER_NAME = 'hm-heygem'
+```bash
+cd ComfyUI-Hydra-InferWorks
+python download_models.py --source huggingface --accept-license
+# 中国大陆也可以使用：
+python download_models.py --source modelscope --accept-license
 ```
 
-## Lifecycle modes
+默认模型目录为 `ComfyUI/models/IndexTTS-2.5/`。推理阶段只读取本地文件；文件不完整时会列出缺失项并失败，不会静默联网下载。
 
-- `external`: never runs Docker commands. The service lifecycle is owned elsewhere.
-- `docker_existing_container`: starts the configured existing container when stopped.
+TTS 节点保持现有工作流 class type：
 
-`stop_container_after=true` stops that configured container in a `finally` block,
-including when generation fails. Enable this only when the ComfyUI queue is the
-authoritative owner of that service.
+- `TopTTS25ModelLoader`
+- `TopTTS25EmotionVector`
+- `TopTTS25Synthesize`
+- `TopTTS25UnloadModel`
 
-## Shared filesystem contract
+卸载节点可以接收可选 `after` 音频依赖，确保生成完成后再终止隔离 worker、释放模型并请求清理显存。
 
-HeyGem commonly accepts paths visible inside its container rather than file
-uploads. Configure:
+### Qwen3-ASR 与强制对齐
 
-- `shared_host_root`: host side of the mounted data directory.
-- `container_data_root`: the same mount inside HeyGem, commonly `/code/data`.
+ASR 模块需要安装公开的 [`DarioFT/ComfyUI-Qwen3-ASR`](https://github.com/DarioFT/ComfyUI-Qwen3-ASR)，由它提供固定版本的 Qwen3-ASR 模型加载器。Hydra InferWorks 提供：
 
-The node writes audio under `inputs/audio/`, the reference video under
-`inputs/video/`, and resolves provider results back to the host root. Relative
-path traversal is rejected.
+- `HydraQwen3LongAsrTranscribe`：在低能量边界切分长音频并恢复全局时间线；
+- `HydraQwen3ForcedAlign`：使用 ASR 锚点分块对齐调用方锁定文本；
+- `HydraTranscriptReceipt`：把源音频哈希、模型身份、时间戳和分块证据写入不可变 JSON 回执。
 
-## Outputs
+模型权重应放在工作流配置的本地路径。生产工作流固定使用 `Qwen/Qwen3-ASR-1.7B` 与 `Qwen/Qwen3-ForcedAligner-0.6B`。
 
-1. `video`: native file-backed ComfyUI `VIDEO`; connect it to `Save Video` or downstream video nodes.
-2. `artifact_path`: absolute path to the generated artifact.
-3. `receipt_json`: endpoint resolution, lifecycle, hashes, paths, provider response, and timing.
+### HeyGem
 
-The generated output is never decoded into a full in-memory frame tensor by
-this node.
+`HydraHeyGemLongformAvatar` 保留原有节点 ID，支持：
 
-## Development
+- 原生 ComfyUI `AUDIO` 与文件型 `VIDEO`；
+- 运行时可配置 URL、host 与 port；
+- 外部服务或既有 Docker 容器生命周期；
+- 调用方提供的安全 `job_code`；
+- 文件型结果、SHA-256、服务响应和生命周期回执；
+- 任务结束后可选停止精确容器并释放 GPU。
+
+它不包含 HeyGem 本体。部署方仍需准备 HeyGem 兼容的 submit/query 服务和共享挂载目录。
+
+### 能力隔离
+
+插件入口分别加载 `tts_nodes.py`、`asr_nodes.py` 和 `heygem_nodes.py`。加载结果公开在 `CAPABILITY_STATUS` 中。缺少 ASR provider、HeyGem 新版 Comfy API 或 TTS Python 依赖时，错误会绑定到对应能力，而不会删除其他成功加载的节点。
+
+### 开发与验证
 
 ```bash
 python -m pip install -e ".[test]"
 python -m pytest
 ```
 
-The core endpoint, client, lifecycle, and path contracts are testable without
-installing ComfyUI. Node import is additionally validated against a real
-ComfyUI runtime before release.
+发布验收还要求在真实 ComfyUI 中读取 `/object_info`，并分别执行代表性的 IndexTTS 2.5、Qwen3-ASR/ForcedAligner 与 HeyGem 队列任务。
 
-## Scope and licensing
+### 许可证
 
-This repository contains only the ComfyUI integration. HeyGem and any container
-image or model weights retain their own licenses and usage restrictions.
+Hydra InferWorks 自研集成代码使用 Apache-2.0。仓库中固定的 IndexTTS 2.5 上游推理源码及另外下载的模型权重受 bilibili Model Use License Agreement 约束，不属于 Apache-2.0；详见 `THIRD_PARTY_NOTICES.md` 与 `UPSTREAM_MODEL_LICENSE.txt`。第三方 ASR provider、HeyGem 和模型分别遵循其上游许可。
 
-Licensed under Apache-2.0.
+## English
+
+Hydra InferWorks is a unified ComfyUI inference node pack for HydraMatrix. It combines fully local IndexTTS 2.5 speech synthesis, Hydra-owned long-audio Qwen3-ASR/forced-alignment receipt nodes, and the file-backed HeyGem long-form avatar adapter. Capability imports are isolated so one missing optional dependency does not disable the remaining modules.
+
+Install the repository and Python requirements, run `install.py` for the private IndexTTS compatibility environment, then download the official IndexTTS 2.5 weights only after accepting `UPSTREAM_MODEL_LICENSE.txt`. Qwen3-ASR requires the external `DarioFT/ComfyUI-Qwen3-ASR` node pack, while HeyGem requires an existing compatible service.
+
+Existing `TopTTS25*`, `HydraQwen3*`, `HydraTranscriptReceipt`, and `HydraHeyGemLongformAvatar` class types are preserved for workflow compatibility.
+

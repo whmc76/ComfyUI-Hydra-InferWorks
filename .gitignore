@@ -7,4 +7,12 @@ build/
 *.egg-info/
 .venv/
 venv/
+python_deps/
+.idea/
+.vscode/
+models/
+output/
+temp/
+*.wav
+*.mp3
 
