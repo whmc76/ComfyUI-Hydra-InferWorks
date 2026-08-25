@@ -1,0 +1,70 @@
+{
+  "1": {
+    "class_type": "LoadAudio",
+    "inputs": {
+      "audio": "__HYDRA_AUDIO_INPUT__"
+    }
+  },
+  "2": {
+    "class_type": "Qwen3ASRLoader",
+    "inputs": {
+      "repo_id": "Qwen/Qwen3-ASR-1.7B",
+      "source": "ModelScope",
+      "precision": "bf16",
+      "attention": "auto",
+      "forced_aligner": "Qwen/Qwen3-ForcedAligner-0.6B",
+      "local_model_path": "__HYDRA_LOCAL_MODEL_PATH__"
+    }
+  },
+  "3": {
+    "class_type": "HydraQwen3LongAsrTranscribe",
+    "inputs": {
+      "model": [
+        "2",
+        0
+      ],
+      "audio": [
+        "1",
+        0
+      ],
+      "language": "auto",
+      "context": "",
+      "return_timestamps": true,
+      "max_chunk_seconds": 90,
+      "silence_search_seconds": 8
+    }
+  },
+  "4": {
+    "class_type": "HydraTranscriptReceipt",
+    "inputs": {
+      "text": [
+        "3",
+        0
+      ],
+      "language": [
+        "3",
+        1
+      ],
+      "timestamps": [
+        "3",
+        2
+      ],
+      "filename_prefix": "hydra-inferworks/qwen3-asr/transcript",
+      "source_audio_sha256": "__HYDRA_SOURCE_AUDIO_SHA256__",
+      "model_id": "Qwen/Qwen3-ASR-1.7B",
+      "aligner_id": "Qwen/Qwen3-ForcedAligner-0.6B",
+      "audio": [
+        "1",
+        0
+      ],
+      "processing_mode": "qwen3_asr_native_chunk_merge",
+      "max_chunk_seconds": 90,
+      "strict_alignment": false,
+      "processing_metadata": [
+        "3",
+        3
+      ]
+    }
+  }
+}
+

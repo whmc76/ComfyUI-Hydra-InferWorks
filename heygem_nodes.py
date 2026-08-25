@@ -167,7 +167,7 @@ class HydraHeyGemLongformAvatar(io.ComfyNode):
     def define_schema(cls):
         return io.Schema(
             node_id="HydraHeyGemLongformAvatar",
-            display_name="Hydra HeyGem Long-form Avatar",
+            display_name="Hydra InferWorks · HeyGem Long-form Avatar",
             category="Hydra InferWorks/Avatar",
             description=(
                 "Generate a long-form HeyGem avatar through a configurable service endpoint. "
