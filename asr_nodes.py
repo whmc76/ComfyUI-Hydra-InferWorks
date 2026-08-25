@@ -42,8 +42,10 @@ ASR_OPTIMIZATION_PROFILES = {
 PLUGIN_DIR = Path(__file__).resolve().parent
 ASR_MODEL_ATTESTATIONS_PATH = PLUGIN_DIR / "asr-model-attestations.v1.json"
 ASR_EXECUTION_EVIDENCE_TYPE = "HYDRA_ASR_EXECUTION_EVIDENCE"
-QWEN_ASR_CONSTRAINED_DECODE_CONTRACT = "inferworks_qwen3_forced_alignment_monotonic_logits.v1"
-QWEN_ASR_CONSTRAINED_DECODE_ALGORITHM = "global_max_logit_monotonic_dynamic_programming"
+FORCED_ALIGNMENT_TIMESTAMP_PROVENANCE = "qwen3_forced_aligner_model_token_logits"
+FORCED_ALIGNMENT_TIMESTAMP_TRANSFORM = "monotonic_constrained_model_decode"
+FORCED_ALIGNMENT_REPAIR_POLICY = "constrained_model_token_decode_no_estimation"
+FORCED_ALIGNMENT_DECODER_ALGORITHM_VERSION = "hydra_qwen3_forced_alignment_monotonic_decode.v1"
 QWEN_ASR_EXPECTED_VERSION = "0.0.6"
 QWEN_ASR_TIMESTAMP_SEGMENT_MS = 80
 QWEN_ASR_TIMESTAMP_CLASS_COUNT = 5000
@@ -489,14 +491,13 @@ def _execution_evidence(
         "upstream_timestamp_repair_policy": _text(
             execution_metadata.get("upstream_timestamp_repair_policy")
         ) or None,
-        "timestamp_decode_contract": _text(execution_metadata.get("timestamp_decode_contract")) or None,
-        "timestamp_decode_algorithm": _text(execution_metadata.get("timestamp_decode_algorithm")) or None,
-        "timestamp_segment_ms": execution_metadata.get("timestamp_segment_ms"),
-        "repair_applied": execution_metadata.get("repair_applied"),
-        "lis_used": execution_metadata.get("lis_used"),
-        "interpolation_used": execution_metadata.get("interpolation_used"),
-        "scale_used": execution_metadata.get("scale_used"),
-        "averaging_used": execution_metadata.get("averaging_used"),
+        "decoder_algorithm_version": _text(
+            execution_metadata.get("decoder_algorithm_version")
+        ) or None,
+        "raw_argmax_sha256": _text(execution_metadata.get("raw_argmax_sha256")) or None,
+        "constrained_token_sha256": _text(
+            execution_metadata.get("constrained_token_sha256")
+        ) or None,
     })
 
 
@@ -516,21 +517,21 @@ def _strict_timestamp_values(data):
 
 
 def _timestamp_constraint_summary(bins, word_count, max_valid_bin):
-    violations = 0
+    violation_positions = set()
     max_backward_bins = 0
     normalized = [int(value) for value in bins]
     for index, value in enumerate(normalized):
         if value < 0 or value > max_valid_bin:
-            violations += 1
+            violation_positions.add(index)
         if index == 0:
             continue
         minimum = normalized[index - 1] + (1 if index % 2 == 1 else 0)
         if value < minimum:
-            violations += 1
+            violation_positions.add(index)
             max_backward_bins = max(max_backward_bins, minimum - value)
     return {
-        "satisfied": len(normalized) == int(word_count) * 2 and violations == 0,
-        "violation_count": violations,
+        "satisfied": len(normalized) == int(word_count) * 2 and not violation_positions,
+        "violation_positions": sorted(violation_positions),
         "max_backward_bins": max_backward_bins,
     }
 
@@ -626,54 +627,35 @@ def _decode_monotonic_timestamp_logits(
         normalized_word_count,
         max_valid_bin,
     )
-    raw_score = sum(float(logits[index, value].item()) for index, value in enumerate(raw_greedy))
-    selected_score = sum(float(logits[index, value].item()) for index, value in enumerate(selected))
     logits_sha256 = hashlib.sha256(
         logits.numpy().astype("<f4", copy=False).tobytes(order="C")
+    ).hexdigest()
+    raw_argmax_sha256 = hashlib.sha256(
+        json.dumps(raw_greedy, separators=(",", ":")).encode("utf-8")
     ).hexdigest()
     selected_sha256 = hashlib.sha256(
         json.dumps(selected, separators=(",", ":")).encode("utf-8")
     ).hexdigest()
     evidence = {
-        "contract_version": QWEN_ASR_CONSTRAINED_DECODE_CONTRACT,
-        "algorithm": QWEN_ASR_CONSTRAINED_DECODE_ALGORITHM,
+        "timestamp_provenance": FORCED_ALIGNMENT_TIMESTAMP_PROVENANCE,
+        "timestamp_transform": FORCED_ALIGNMENT_TIMESTAMP_TRANSFORM,
+        "upstream_timestamp_repair_policy": FORCED_ALIGNMENT_REPAIR_POLICY,
+        "decoder_algorithm_version": FORCED_ALIGNMENT_DECODER_ALGORITHM_VERSION,
+        "estimated_timestamps": False,
         "timestamp_segment_ms": QWEN_ASR_TIMESTAMP_SEGMENT_MS,
         "class_count": class_count,
         "word_count": normalized_word_count,
-        "slot_count": slot_count,
+        "timestamp_position_count": slot_count,
         "duration_seconds": round(normalized_duration, 6),
         "duration_bound_bin": duration_bound_bin,
         "max_valid_bin": max_valid_bin,
-        "constraints": {
-            "global_non_decreasing": True,
-            "positive_word_span_one_bin": True,
-            "next_start_not_before_previous_end": True,
-            "audio_duration_bounded": True,
-        },
-        "raw_greedy_bins": raw_greedy,
-        "raw_constraints_satisfied": raw_constraints["satisfied"],
-        "raw_violation_count": raw_constraints["violation_count"],
+        "raw_argmax_sha256": raw_argmax_sha256,
+        "raw_argmax_violation_positions": raw_constraints["violation_positions"],
         "raw_max_backward_bins": raw_constraints["max_backward_bins"],
-        "selected_bins": selected,
-        "selected_bins_sha256": selected_sha256,
-        "selected_constraints_satisfied": selected_constraints["satisfied"],
-        "changed_position_count": sum(
-            int(raw_value != selected_value)
-            for raw_value, selected_value in zip(raw_greedy, selected)
-        ),
-        "raw_greedy_logit_score": round(raw_score, 6),
-        "selected_path_logit_score": round(selected_score, 6),
-        "constrained_logit_penalty": round(raw_score - selected_score, 6),
+        "constrained_token_sha256": selected_sha256,
         "masked_logits_shape": [slot_count, class_count],
         "masked_logits_fp32_sha256": logits_sha256,
         "deterministic_tie_break": "earliest_bin",
-        "feasible": True,
-        "lis_used": False,
-        "interpolation_used": False,
-        "scale_used": False,
-        "averaging_used": False,
-        "repair_applied": False,
-        "estimated_timestamps": False,
     }
     return selected, evidence
 
@@ -827,9 +809,12 @@ def _align_with_monotonic_timestamp_logits(aligner, audio, text, language):
         "timestamp_token_id": contract["timestamp_token_id"],
         "normalized_audio_sample_rate": normalized_sample_rate,
         "normalized_audio_sample_count": int(normalized_audio.size),
-        "word_units_sha256": hashlib.sha256(
-            json.dumps(word_list, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
-        ).hexdigest(),
+        "normalized_audio_content_sha256": _audio_content_sha256(
+            normalized_audio,
+            normalized_sample_rate,
+        ),
+        "text_sha256": hashlib.sha256(_text(text).encode("utf-8")).hexdigest(),
+        "language_sha256": hashlib.sha256(_text(language).encode("utf-8")).hexdigest(),
     })
     return items, decode_evidence
 
@@ -839,30 +824,36 @@ def _constrained_decode_evidence_valid(value):
         return False
     try:
         word_count = int(value.get("word_count"))
-        slot_count = int(value.get("slot_count"))
+        position_count = int(value.get("timestamp_position_count"))
         class_count = int(value.get("class_count"))
         duration_seconds = float(value.get("duration_seconds"))
         duration_bound_bin = int(value.get("duration_bound_bin"))
         max_valid_bin = int(value.get("max_valid_bin"))
         normalized_sample_rate = int(value.get("normalized_audio_sample_rate"))
         normalized_sample_count = int(value.get("normalized_audio_sample_count"))
-        raw_score = float(value.get("raw_greedy_logit_score"))
-        selected_score = float(value.get("selected_path_logit_score"))
-        penalty = float(value.get("constrained_logit_penalty"))
     except (TypeError, ValueError):
         return False
-    raw_bins = value.get("raw_greedy_bins")
-    selected_bins = value.get("selected_bins")
-    constraints = value.get("constraints")
+    violation_positions = value.get("raw_argmax_violation_positions")
+    sha256_fields = (
+        "raw_argmax_sha256",
+        "constrained_token_sha256",
+        "masked_logits_fp32_sha256",
+        "normalized_audio_content_sha256",
+        "text_sha256",
+        "language_sha256",
+    )
     if (
-        value.get("contract_version") != QWEN_ASR_CONSTRAINED_DECODE_CONTRACT
-        or value.get("algorithm") != QWEN_ASR_CONSTRAINED_DECODE_ALGORITHM
+        value.get("timestamp_provenance") != FORCED_ALIGNMENT_TIMESTAMP_PROVENANCE
+        or value.get("timestamp_transform") != FORCED_ALIGNMENT_TIMESTAMP_TRANSFORM
+        or value.get("upstream_timestamp_repair_policy") != FORCED_ALIGNMENT_REPAIR_POLICY
+        or value.get("decoder_algorithm_version") != FORCED_ALIGNMENT_DECODER_ALGORITHM_VERSION
+        or value.get("estimated_timestamps") is not False
         or value.get("qwen_asr_version") != QWEN_ASR_EXPECTED_VERSION
         or value.get("timestamp_segment_ms") != QWEN_ASR_TIMESTAMP_SEGMENT_MS
         or value.get("timestamp_token_id") != QWEN_ASR_TIMESTAMP_TOKEN_ID
         or class_count != QWEN_ASR_TIMESTAMP_CLASS_COUNT
         or word_count < 1
-        or slot_count != word_count * 2
+        or position_count != word_count * 2
         or normalized_sample_rate != 16000
         or normalized_sample_count < 1
         or not np.isfinite(duration_seconds)
@@ -871,56 +862,33 @@ def _constrained_decode_evidence_valid(value):
             duration_seconds * 1000.0 / QWEN_ASR_TIMESTAMP_SEGMENT_MS + 1e-9
         ))
         or max_valid_bin != min(class_count - 1, duration_bound_bin)
-        or not isinstance(raw_bins, list)
-        or not isinstance(selected_bins, list)
-        or len(raw_bins) != slot_count
-        or len(selected_bins) != slot_count
-        or any(type(item) is not int or item < 0 or item >= class_count for item in raw_bins)
-        or any(type(item) is not int for item in selected_bins)
-        or constraints != {
-            "global_non_decreasing": True,
-            "positive_word_span_one_bin": True,
-            "next_start_not_before_previous_end": True,
-            "audio_duration_bounded": True,
-        }
-    ):
-        return False
-    selected_summary = _timestamp_constraint_summary(selected_bins, word_count, max_valid_bin)
-    raw_summary = _timestamp_constraint_summary(raw_bins, word_count, max_valid_bin)
-    expected_selected_sha256 = hashlib.sha256(
-        json.dumps(selected_bins, separators=(",", ":")).encode("utf-8")
-    ).hexdigest()
-    changed_count = sum(
-        int(raw_value != selected_value)
-        for raw_value, selected_value in zip(raw_bins, selected_bins)
-    )
-    if (
-        not selected_summary["satisfied"]
-        or value.get("selected_constraints_satisfied") is not True
-        or value.get("raw_constraints_satisfied") is not raw_summary["satisfied"]
-        or value.get("raw_violation_count") != raw_summary["violation_count"]
-        or value.get("raw_max_backward_bins") != raw_summary["max_backward_bins"]
-        or value.get("changed_position_count") != changed_count
-        or _text(value.get("selected_bins_sha256")).lower() != expected_selected_sha256
-        or not re.fullmatch(r"[a-f0-9]{64}", _text(value.get("masked_logits_fp32_sha256")).lower())
-        or not re.fullmatch(r"[a-f0-9]{64}", _text(value.get("word_units_sha256")).lower())
-        or value.get("masked_logits_shape") != [slot_count, class_count]
+        or max_valid_bin < word_count
+        or value.get("masked_logits_shape") != [position_count, class_count]
         or value.get("deterministic_tie_break") != "earliest_bin"
-        or value.get("feasible") is not True
-        or any(value.get(field) is not False for field in (
-            "lis_used",
-            "interpolation_used",
-            "scale_used",
-            "averaging_used",
-            "repair_applied",
-            "estimated_timestamps",
-        ))
-        or not all(np.isfinite(item) for item in (raw_score, selected_score, penalty))
-        or penalty < -1e-5
-        or abs((raw_score - selected_score) - penalty) > 2e-5
+        or any(not re.fullmatch(r"[a-f0-9]{64}", _text(value.get(field)).lower()) for field in sha256_fields)
+        or not isinstance(violation_positions, list)
+        or any(type(position) is not int for position in violation_positions)
+        or violation_positions != sorted(set(violation_positions))
+        or any(position < 0 or position >= position_count for position in violation_positions)
     ):
         return False
     return True
+
+
+def _aggregate_constrained_decode_hash(chunks, field):
+    if any(
+        not isinstance(chunk, dict) or not isinstance(chunk.get("timestamp_decode"), dict)
+        for chunk in chunks
+    ):
+        raise ValueError("hydra_qwen3_forced_align_constrained_decode_hash_missing")
+    values = [_text(chunk["timestamp_decode"].get(field)).lower() for chunk in chunks]
+    if not values or any(not re.fullmatch(r"[a-f0-9]{64}", value) for value in values):
+        raise ValueError("hydra_qwen3_forced_align_constrained_decode_hash_missing")
+    if len(values) == 1:
+        return values[0]
+    return hashlib.sha256(
+        json.dumps(values, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
 
 
 def _anchor_groups(segments, max_chunk_seconds):
@@ -1253,7 +1221,10 @@ class HydraQwen3ForcedAlign:
                 "start_seconds": round(slice_start_seconds, 6),
                 "end_seconds": round(slice_end_seconds, 6),
                 "locked_text_sha256": hashlib.sha256(chunk_text.encode("utf-8")).hexdigest(),
-                "timestamp_transform": "offset_only",
+                "timestamp_provenance": FORCED_ALIGNMENT_TIMESTAMP_PROVENANCE,
+                "timestamp_transform": FORCED_ALIGNMENT_TIMESTAMP_TRANSFORM,
+                "upstream_timestamp_repair_policy": FORCED_ALIGNMENT_REPAIR_POLICY,
+                "decoder_algorithm_version": FORCED_ALIGNMENT_DECODER_ALGORITHM_VERSION,
                 "estimated_timestamps": False,
                 "aligned_item_count": len(native_items),
                 "timestamp_decode": timestamp_decode,
@@ -1275,18 +1246,19 @@ class HydraQwen3ForcedAlign:
                 else "single_chunk_direct_forced_alignment"
             ),
             "anchor_text_match": anchor_text_match,
-            "timestamp_provenance": "qwen3_forced_aligner_logits_monotonic_viterbi",
+            "timestamp_provenance": FORCED_ALIGNMENT_TIMESTAMP_PROVENANCE,
             "estimated_timestamps": False,
-            "timestamp_transform": "offset_only",
-            "upstream_timestamp_repair_policy": "bypass_lis_constrained_decode",
-            "timestamp_decode_contract": QWEN_ASR_CONSTRAINED_DECODE_CONTRACT,
-            "timestamp_decode_algorithm": QWEN_ASR_CONSTRAINED_DECODE_ALGORITHM,
-            "timestamp_segment_ms": QWEN_ASR_TIMESTAMP_SEGMENT_MS,
-            "repair_applied": False,
-            "lis_used": False,
-            "interpolation_used": False,
-            "scale_used": False,
-            "averaging_used": False,
+            "timestamp_transform": FORCED_ALIGNMENT_TIMESTAMP_TRANSFORM,
+            "upstream_timestamp_repair_policy": FORCED_ALIGNMENT_REPAIR_POLICY,
+            "decoder_algorithm_version": FORCED_ALIGNMENT_DECODER_ALGORITHM_VERSION,
+            "raw_argmax_sha256": _aggregate_constrained_decode_hash(
+                alignment_chunk_receipts,
+                "raw_argmax_sha256",
+            ),
+            "constrained_token_sha256": _aggregate_constrained_decode_hash(
+                alignment_chunk_receipts,
+                "constrained_token_sha256",
+            ),
             "chunks": alignment_chunk_receipts,
         }
         evidence = _execution_evidence(
@@ -1442,19 +1414,24 @@ class HydraTranscriptReceipt:
                 raise ValueError("hydra_transcript_receipt_precise_timestamps_required")
             constrained_forced_alignment = expected_operation == "forced_alignment"
             expected_provenance = (
-                "qwen3_forced_aligner_logits_monotonic_viterbi"
+                FORCED_ALIGNMENT_TIMESTAMP_PROVENANCE
                 if constrained_forced_alignment
                 else "qwen3_forced_aligner_native"
             )
+            expected_transform = (
+                FORCED_ALIGNMENT_TIMESTAMP_TRANSFORM
+                if constrained_forced_alignment
+                else "offset_only"
+            )
             expected_repair_policy = (
-                "bypass_lis_constrained_decode"
+                FORCED_ALIGNMENT_REPAIR_POLICY
                 if constrained_forced_alignment
                 else "reject_non_monotonic_raw_tokens"
             )
             if (
                 _text(execution_details.get("timestamp_provenance")) != expected_provenance
                 or execution_details.get("estimated_timestamps") is not False
-                or _text(execution_details.get("timestamp_transform")) != "offset_only"
+                or _text(execution_details.get("timestamp_transform")) != expected_transform
                 or _text(execution_details.get("upstream_timestamp_repair_policy"))
                 != expected_repair_policy
             ):
@@ -1462,7 +1439,7 @@ class HydraTranscriptReceipt:
             if (
                 _text(verified_evidence.get("timestamp_provenance")) != expected_provenance
                 or verified_evidence.get("estimated_timestamps") is not False
-                or _text(verified_evidence.get("timestamp_transform")) != "offset_only"
+                or _text(verified_evidence.get("timestamp_transform")) != expected_transform
                 or _text(verified_evidence.get("upstream_timestamp_repair_policy"))
                 != expected_repair_policy
             ):
@@ -1471,27 +1448,42 @@ class HydraTranscriptReceipt:
             for chunk in chunks:
                 if (
                     not isinstance(chunk, dict)
-                    or _text(chunk.get("timestamp_transform")) != "offset_only"
+                    or _text(chunk.get("timestamp_transform")) != expected_transform
                     or chunk.get("estimated_timestamps") is not False
                     or "timestamp_scale" in chunk
                 ):
                     raise ValueError("hydra_transcript_receipt_exact_chunk_evidence_required")
             if constrained_forced_alignment:
                 exact_decode_fields = {
-                    "timestamp_decode_contract": QWEN_ASR_CONSTRAINED_DECODE_CONTRACT,
-                    "timestamp_decode_algorithm": QWEN_ASR_CONSTRAINED_DECODE_ALGORITHM,
-                    "timestamp_segment_ms": QWEN_ASR_TIMESTAMP_SEGMENT_MS,
-                    "repair_applied": False,
-                    "lis_used": False,
-                    "interpolation_used": False,
-                    "scale_used": False,
-                    "averaging_used": False,
+                    "timestamp_provenance": FORCED_ALIGNMENT_TIMESTAMP_PROVENANCE,
+                    "timestamp_transform": FORCED_ALIGNMENT_TIMESTAMP_TRANSFORM,
+                    "upstream_timestamp_repair_policy": FORCED_ALIGNMENT_REPAIR_POLICY,
+                    "decoder_algorithm_version": FORCED_ALIGNMENT_DECODER_ALGORITHM_VERSION,
+                    "estimated_timestamps": False,
                 }
+                if not chunks or any(
+                    not _constrained_decode_evidence_valid(chunk.get("timestamp_decode"))
+                    for chunk in chunks
+                ):
+                    raise ValueError("hydra_transcript_receipt_constrained_decode_evidence_required")
+                raw_argmax_sha256 = _aggregate_constrained_decode_hash(
+                    chunks,
+                    "raw_argmax_sha256",
+                )
+                constrained_token_sha256 = _aggregate_constrained_decode_hash(
+                    chunks,
+                    "constrained_token_sha256",
+                )
                 if (
-                    not chunks
-                    or any(execution_details.get(field) != expected for field, expected in exact_decode_fields.items())
+                    any(execution_details.get(field) != expected for field, expected in exact_decode_fields.items())
                     or any(verified_evidence.get(field) != expected for field, expected in exact_decode_fields.items())
-                    or any(not _constrained_decode_evidence_valid(chunk.get("timestamp_decode")) for chunk in chunks)
+                    or any(chunk.get(field) != expected for chunk in chunks for field, expected in exact_decode_fields.items())
+                    or _text(execution_details.get("raw_argmax_sha256")).lower() != raw_argmax_sha256
+                    or _text(verified_evidence.get("raw_argmax_sha256")).lower() != raw_argmax_sha256
+                    or _text(execution_details.get("constrained_token_sha256")).lower()
+                    != constrained_token_sha256
+                    or _text(verified_evidence.get("constrained_token_sha256")).lower()
+                    != constrained_token_sha256
                 ):
                     raise ValueError("hydra_transcript_receipt_constrained_decode_evidence_required")
             if (
