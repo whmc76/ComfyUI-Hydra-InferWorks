@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.1.2 - 2026-08-25
+
+- Install the lightweight `soundfile` import dependency in the public CPU CI matrix so
+  the TTS loader and worker runtime-profile contracts are exercised on Python 3.10–3.12.
+
 ## 1.1.1 - 2026-08-25
 
 - Preserve v1.0 TTS precision and acceleration inputs when an older workflow has no optimization-profile field.

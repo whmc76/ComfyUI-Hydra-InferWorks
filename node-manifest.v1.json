@@ -1,7 +1,7 @@
 {
   "contract_version": "hydra_inferworks_node_manifest.v1",
   "package": "comfyui-hydra-inferworks",
-  "version": "1.1.1",
+  "version": "1.1.2",
   "minimum_comfyui_version": "0.30.0",
   "inference_profiles": "inference-profiles.v1.json",
   "asr_model_attestations": "asr-model-attestations.v1.json",
