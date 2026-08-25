@@ -17,6 +17,7 @@ sys.modules.setdefault(
 _SPEC = spec_from_file_location("hydra_comfyui_audio_nodes", Path(__file__).resolve().parents[1] / "asr_nodes.py")
 _MODULE = module_from_spec(_SPEC)
 _SPEC.loader.exec_module(_MODULE)
+_MODULE._QWEN_ASR_RUNTIME_VERSION = "0.0.6"
 HydraQwen3ForcedAlign = _MODULE.HydraQwen3ForcedAlign
 HydraQwen3ASRModelLoader = _MODULE.HydraQwen3ASRModelLoader
 HydraQwen3LongAsrTranscribe = _MODULE.HydraQwen3LongAsrTranscribe
@@ -30,33 +31,80 @@ class _Item:
         self.end_time = end_time
 
 
+class _Batch(dict):
+    def to(self, *_args, **_kwargs):
+        return self
+
+
+class _Thinker:
+    def __init__(self, aligner):
+        self.aligner = aligner
+        self.config = SimpleNamespace(classify_num=5000)
+
+    def __call__(self, **inputs):
+        slot_count = inputs["input_ids"].shape[1]
+        logits = torch.full((1, slot_count, 5000), -100.0, dtype=torch.float32)
+        duration_bins = int(self.aligner.normalized_sample_count / 16000 * 1000 // 80)
+        word_count = slot_count // 2
+        for word_index in range(word_count):
+            start_bin = max(0, int(duration_bins * word_index / word_count))
+            end_bin = max(start_bin + 1, int(duration_bins * (word_index + 1) / word_count))
+            end_bin = min(4999, end_bin)
+            logits[0, word_index * 2, start_bin] = 10.0
+            logits[0, word_index * 2 + 1, end_bin] = 10.0
+        if self.aligner.raw_overflow:
+            logits[0, 0, min(4998, duration_bins + 10)] = 20.0
+            logits[0, 1, min(4999, duration_bins + 11)] = 20.0
+        return SimpleNamespace(logits=logits)
+
+
 class _Aligner:
-    def __init__(self):
-        self.aligner_processor = SimpleNamespace(fix_timestamp=lambda values: list(values))
+    def __init__(self, raw_overflow=False):
+        self.raw_overflow = raw_overflow
+        self.normalized_sample_count = 0
+        self.timestamp_token_id = 151705
+        self.timestamp_segment_time = 80
+        self.aligner_processor = SimpleNamespace(
+            fix_timestamp=lambda values: list(values),
+            encode_timestamp=self._encode_timestamp,
+        )
+        thinker = _Thinker(self)
+        self.model = SimpleNamespace(
+            thinker=thinker,
+            device=torch.device("cpu"),
+            dtype=torch.float32,
+        )
+        self.processor = self._processor
 
-    def align(self, audio, text, language):
+    def _inferworks_normalize_audios(self, audio):
         waveform, sample_rate = audio
-        duration = len(waveform) / sample_rate
-        characters = list(text)
-        items = [
-            _Item(
-                character,
-                duration * (index / len(characters)) ** 2,
-                duration * ((index + 1) / len(characters)) ** 2,
-            )
-            for index, character in enumerate(characters)
-        ]
-        return [SimpleNamespace(items=items)]
+        duration_seconds = len(waveform) / sample_rate
+        self.normalized_sample_count = max(1, round(duration_seconds * 16000))
+        return [torch.zeros(self.normalized_sample_count).numpy()], 16000
+
+    def _processor(self, text, audio, return_tensors, padding):
+        del text, audio, return_tensors, padding
+        word_count = len(self.aligner_processor.encode_timestamp_result) if hasattr(
+            self.aligner_processor, "encode_timestamp_result"
+        ) else None
+        if word_count is None:
+            raise AssertionError("encode_timestamp_result_missing")
+        return _Batch({
+            "input_ids": torch.full((1, word_count * 2), self.timestamp_token_id, dtype=torch.int64)
+        })
+
+    def _encode_timestamp(self, text, _language):
+        words = [character for character in text if character.isalnum()]
+        self.aligner_processor.encode_timestamp_result = words
+        return words, "<timestamp><timestamp>".join(words) + "<timestamp><timestamp>"
+
+    def align(self, *_args, **_kwargs):
+        raise AssertionError("upstream align fallback must never execute")
 
 
-class _OverflowAligner:
+class _OverflowAligner(_Aligner):
     def __init__(self):
-        self.aligner_processor = SimpleNamespace(fix_timestamp=lambda values: list(values))
-
-    def align(self, audio, text, language):
-        waveform, sample_rate = audio
-        duration = len(waveform) / sample_rate
-        return [SimpleNamespace(items=[_Item(text, 0.0, duration + 1.0)])]
+        super().__init__(raw_overflow=True)
 
 
 class _AsrModel:
@@ -76,6 +124,101 @@ class _AsrModel:
 
 
 class HydraAudioNodeTests(unittest.TestCase):
+    def test_monotonic_logit_decoder_selects_global_best_discrete_path(self):
+        logits = torch.full((4, 5), -100.0, dtype=torch.float32)
+        logits[0, 0] = 10.0
+        logits[1, 3] = 10.0
+        logits[1, 2] = 9.0
+        logits[2, 2] = 10.0
+        logits[2, 3] = 1.0
+        logits[3, 4] = 10.0
+
+        bins, evidence = _MODULE._decode_monotonic_timestamp_logits(
+            logits,
+            word_count=2,
+            duration_seconds=0.32,
+            timestamp_segment_ms=80,
+        )
+
+        self.assertEqual(bins, [0, 2, 2, 4])
+        self.assertEqual(evidence["raw_greedy_bins"], [0, 3, 2, 4])
+        self.assertFalse(evidence["raw_constraints_satisfied"])
+        self.assertTrue(evidence["selected_constraints_satisfied"])
+        self.assertEqual(evidence["changed_position_count"], 1)
+        self.assertFalse(evidence["lis_used"])
+        self.assertFalse(evidence["interpolation_used"])
+        self.assertFalse(evidence["scale_used"])
+        self.assertFalse(evidence["averaging_used"])
+        self.assertFalse(evidence["estimated_timestamps"])
+
+    def test_monotonic_logit_decoder_uses_earliest_bin_for_equal_scores(self):
+        bins, _evidence = _MODULE._decode_monotonic_timestamp_logits(
+            torch.zeros((2, 4), dtype=torch.float32),
+            word_count=1,
+            duration_seconds=0.24,
+            timestamp_segment_ms=80,
+        )
+        self.assertEqual(bins, [0, 1])
+
+    def test_monotonic_logit_decoder_fails_closed_on_invalid_or_infeasible_inputs(self):
+        cases = (
+            (
+                "timestamp_logits_non_finite",
+                torch.tensor([[0.0, float("nan")], [0.0, 1.0]]),
+                1,
+                0.08,
+                80,
+            ),
+            (
+                "timestamp_slot_count_invalid",
+                torch.zeros((3, 4)),
+                1,
+                0.24,
+                80,
+            ),
+            (
+                "timestamp_path_infeasible",
+                torch.zeros((4, 4)),
+                2,
+                0.08,
+                80,
+            ),
+            (
+                "timestamp_segment_time_invalid",
+                torch.zeros((2, 4)),
+                1,
+                0.24,
+                40,
+            ),
+        )
+        for error_code, logits, word_count, duration_seconds, segment_ms in cases:
+            with self.subTest(error_code=error_code):
+                with self.assertRaisesRegex(ValueError, error_code):
+                    _MODULE._decode_monotonic_timestamp_logits(
+                        logits,
+                        word_count=word_count,
+                        duration_seconds=duration_seconds,
+                        timestamp_segment_ms=segment_ms,
+                    )
+
+    def test_constrained_alignment_fails_closed_on_qwen_version_or_structure_drift(self):
+        aligner = _Aligner()
+        audio = (torch.zeros(16000).numpy(), 16000)
+        original_version = _MODULE._QWEN_ASR_RUNTIME_VERSION
+        try:
+            _MODULE._QWEN_ASR_RUNTIME_VERSION = "0.0.7"
+            with self.assertRaisesRegex(RuntimeError, "qwen_asr_version_invalid"):
+                _MODULE._align_with_monotonic_timestamp_logits(
+                    aligner, audio, "甲", "Chinese"
+                )
+        finally:
+            _MODULE._QWEN_ASR_RUNTIME_VERSION = original_version
+        aligner.model.thinker.config.classify_num = 4999
+        with self.assertRaisesRegex(RuntimeError, "runtime_structure_invalid"):
+            _MODULE._align_with_monotonic_timestamp_logits(
+                aligner, audio, "甲", "Chinese"
+            )
+
     def test_loader_defaults_to_quality_admitted_bf16_sdpa(self):
         inputs = HydraQwen3ASRModelLoader.INPUT_TYPES()["required"]
         self.assertEqual(inputs["optimization_profile"][1]["default"], "transformers_bf16_sdpa")
@@ -127,12 +270,19 @@ class HydraAudioNodeTests(unittest.TestCase):
         lines = timestamps.splitlines()
         self.assertEqual(len(lines), len(locked_text))
         self.assertTrue(lines[0].startswith("0.000000-"))
-        self.assertTrue(lines[-1].startswith("162.500000-200.000000:"))
+        self.assertTrue(lines[-1].endswith("-200.000000: 辛"))
         self.assertEqual(__import__("json").loads(metadata_json)["actual_chunk_count"], 4)
         metadata = __import__("json").loads(metadata_json)
-        self.assertEqual(metadata["timestamp_provenance"], "qwen3_forced_aligner_native")
+        self.assertEqual(
+            metadata["timestamp_provenance"],
+            "qwen3_forced_aligner_logits_monotonic_viterbi",
+        )
         self.assertFalse(metadata["estimated_timestamps"])
         self.assertTrue(all(chunk["timestamp_transform"] == "offset_only" for chunk in metadata["chunks"]))
+        self.assertTrue(all(
+            chunk["timestamp_decode"]["selected_constraints_satisfied"]
+            for chunk in metadata["chunks"]
+        ))
         self.assertEqual(evidence.to_payload()["operation"], "forced_alignment")
 
     def test_long_locked_script_alignment_rejects_non_exact_anchor_mapping_even_with_legacy_tolerance(self):
@@ -152,22 +302,29 @@ class HydraAudioNodeTests(unittest.TestCase):
                 maximum_anchor_character_error_rate=1.0,
             )
 
-    def test_forced_alignment_rejects_native_timestamp_overflow_instead_of_scaling(self):
+    def test_forced_alignment_constrains_overflow_logits_without_scaling(self):
         audio = {
             "waveform": torch.zeros((1, 1, 10), dtype=torch.float32),
             "sample_rate": 10,
         }
-        with self.assertRaisesRegex(ValueError, "native_timestamp_out_of_bounds"):
-            HydraQwen3ForcedAlign().align(
-                SimpleNamespace(forced_aligner=_OverflowAligner()),
-                audio,
-                "甲",
-                "Chinese",
-            )
+        _text, _language, timestamps, metadata_json, _evidence = HydraQwen3ForcedAlign().align(
+            SimpleNamespace(forced_aligner=_OverflowAligner()),
+            audio,
+            "甲",
+            "Chinese",
+        )
+        metadata = __import__("json").loads(metadata_json)
+        decode = metadata["chunks"][0]["timestamp_decode"]
+        self.assertEqual(timestamps, "0.000000-0.960000: 甲")
+        self.assertFalse(decode["raw_constraints_satisfied"])
+        self.assertTrue(decode["selected_constraints_satisfied"])
+        self.assertFalse(decode["scale_used"])
 
     def test_upstream_non_monotonic_timestamp_tokens_fail_instead_of_provider_repair(self):
         model = SimpleNamespace(forced_aligner=_Aligner())
+        original = model.forced_aligner.aligner_processor.fix_timestamp
         _MODULE._install_strict_timestamp_guard(model)
+        self.assertIs(model.forced_aligner.aligner_processor._inferworks_original_fix_timestamp, original)
         with self.assertRaisesRegex(ValueError, "upstream_timestamp_repair_forbidden"):
             model.forced_aligner.aligner_processor.fix_timestamp([0, 80, 40, 120])
 
@@ -215,7 +372,7 @@ class HydraAudioNodeTests(unittest.TestCase):
         self.assertEqual(payload["status"], "completed_unverified")
         self.assertEqual(evidence["source_duration_seconds"], 200.0)
 
-    def test_typed_forced_alignment_receipt_admits_only_exact_native_timing(self):
+    def test_typed_forced_alignment_receipt_admits_only_constrained_logit_timing(self):
         audio = {"waveform": torch.zeros((1, 1, 16), dtype=torch.float32), "sample_rate": 16}
         profile = {
             "contract_version": "hydra_inferworks_asr_inference_profile.v1",
@@ -254,9 +411,14 @@ class HydraAudioNodeTests(unittest.TestCase):
         payload = __import__("json").loads(Path(result["result"][0]).read_text(encoding="utf-8"))
         timing = payload["long_audio_processing"]
         self.assertEqual(payload["status"], "completed")
-        self.assertEqual(timing["timestamp_provenance"], "qwen3_forced_aligner_native")
+        self.assertEqual(
+            timing["timestamp_provenance"],
+            "qwen3_forced_aligner_logits_monotonic_viterbi",
+        )
         self.assertFalse(timing["estimated_timestamps"])
         self.assertEqual(timing["timestamp_transform"], "offset_only")
+        self.assertFalse(timing["execution_details"]["interpolation_used"])
+        self.assertFalse(timing["execution_details"]["lis_used"])
         self.assertTrue(timing["timestamp_offsets_preserved"])
 
     def test_receipt_rejects_malformed_overlapping_out_of_bounds_or_text_mismatched_timestamps(self):

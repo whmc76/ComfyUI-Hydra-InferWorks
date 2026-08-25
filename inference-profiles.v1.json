@@ -48,6 +48,16 @@
   "asr": {
     "model_id": "Qwen/Qwen3-ASR-1.7B",
     "forced_aligner_id": "Qwen/Qwen3-ForcedAligner-0.6B",
+    "forced_alignment_decode": {
+      "contract_version": "inferworks_qwen3_forced_alignment_monotonic_logits.v1",
+      "algorithm": "global_max_logit_monotonic_dynamic_programming",
+      "timestamp_segment_ms": 80,
+      "upstream_timestamp_repair": "forbidden",
+      "interpolation": false,
+      "averaging": false,
+      "scaling": false,
+      "estimation": false
+    },
     "production_default": "transformers_bf16_sdpa",
     "profiles": {
       "transformers_bf16_sdpa": {

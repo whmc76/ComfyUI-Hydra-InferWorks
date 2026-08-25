@@ -1,7 +1,7 @@
 {
   "contract_version": "hydra_inferworks_node_manifest.v1",
   "package": "comfyui-hydra-inferworks",
-  "version": "1.2.1",
+  "version": "1.2.2",
   "minimum_comfyui_version": "0.30.0",
   "inference_profiles": "inference-profiles.v1.json",
   "asr_model_attestations": "asr-model-attestations.v1.json",
@@ -71,7 +71,8 @@
     "inference_precision_quantization_and_acceleration_are_recorded",
     "runtime_evidence_is_derived_from_executed_models_not_caller_strings",
     "production_asr_receipts_require_exact_official_model_attestations",
-    "production_asr_alignment_uses_only_native_forced_aligner_units",
+    "production_asr_alignment_uses_only_model_native_80ms_timestamp_bins",
+    "asr_alignment_uses_global_max_logit_monotonic_decoding_not_timestamp_repair",
     "asr_timestamp_interpolation_scaling_clamping_and_estimation_fail_closed",
     "unverified_quantization_profiles_fail_closed",
     "asr_long_audio_timestamps_restore_one_global_timeline",

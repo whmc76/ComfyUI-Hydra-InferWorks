@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.2.2 - 2026-08-26
+
+- Decode Qwen3 ForcedAligner timestamp logits with a deterministic global maximum-logit monotonic
+  dynamic program over the model's native 80 ms classes.
+- Require every word or character to have a positive native-bin span, keep consecutive units
+  non-overlapping, and bound all selected bins to the normalized audio duration.
+- Bypass upstream `fix_timestamp` and `parse_timestamp` completely on the production forced-alignment
+  path; LIS, nearest-neighbor repair, interpolation, averaging, scaling, clamping, and duration
+  projection remain forbidden.
+- Bind typed execution evidence to the raw greedy bins, selected path, logits and path digests,
+  model/runtime structure, constraints, score penalty, and explicit no-repair flags.
+- Fail closed on qwen-asr version or structure drift, invalid logits, timestamp-slot mismatch, and
+  infeasible paths; old raw-native provenance cannot satisfy the new forced-alignment receipt gate.
+
 ## 1.2.1 - 2026-08-26
 
 - Make Qwen3 ForcedAligner native units the only production ASR timing authority.
