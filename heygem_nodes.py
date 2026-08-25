@@ -223,6 +223,18 @@ class HydraHeyGemLongformAvatar(io.ComfyNode):
                 io.String.Input("container_name", default="auto"),
                 io.Boolean.Input("release_comfyui_models", default=True),
                 io.Boolean.Input("stop_container_after", default=False),
+                io.Boolean.Input(
+                    "release_service_gpu_after",
+                    default=False,
+                    tooltip=(
+                        "Ask the externally supervised HeyGem service to release model GPU memory "
+                        "after the job without granting this ComfyUI container Docker control."
+                    ),
+                ),
+                io.String.Input(
+                    "service_gpu_release_path",
+                    default="/v1/system/gpu/release",
+                ),
                 io.Int.Input("ready_timeout_seconds", default=90, min=1, max=900, step=1),
                 io.Int.Input("generation_timeout_seconds", default=7200, min=10, max=86400, step=10),
                 io.Float.Input("poll_interval_seconds", default=3.0, min=0.1, max=60.0, step=0.1),
@@ -255,6 +267,8 @@ class HydraHeyGemLongformAvatar(io.ComfyNode):
         container_name: str,
         release_comfyui_models: bool,
         stop_container_after: bool,
+        release_service_gpu_after: bool,
+        service_gpu_release_path: str,
         ready_timeout_seconds: int,
         generation_timeout_seconds: int,
         poll_interval_seconds: float,
@@ -288,7 +302,9 @@ class HydraHeyGemLongformAvatar(io.ComfyNode):
         release_receipt = None
         generation_receipt = None
         ready_receipt = None
+        service_gpu_release_receipt = None
         output_path: Optional[Path] = None
+        client = None
         try:
             resolved_health_path = (
                 f"{query_path}{'&' if '?' in query_path else '?'}code=healthcheck"
@@ -339,6 +355,13 @@ class HydraHeyGemLongformAvatar(io.ComfyNode):
             output_path = _wait_for_artifact(output_path, artifact_wait_seconds)
         finally:
             release_receipt = lifecycle.release(stop_after_job=stop_container_after)
+            if release_service_gpu_after:
+                if client is None:
+                    raise ValueError("hydra_heygem_service_gpu_release_client_missing")
+                service_gpu_release_receipt = client.release_gpu(
+                    release_path=service_gpu_release_path,
+                    timeout_seconds=min(max(float(ready_timeout_seconds), 0.1), 120.0),
+                )
 
         if generation_receipt is None or output_path is None:
             raise ValueError("hydra_heygem_generation_receipt_missing")
@@ -366,6 +389,23 @@ class HydraHeyGemLongformAvatar(io.ComfyNode):
                 "stopped": release_receipt.stopped if release_receipt else False,
                 "release_comfyui_models": bool(release_comfyui_models),
                 "stop_container_after": bool(stop_container_after),
+                "service_gpu_release": {
+                    "requested": bool(release_service_gpu_after),
+                    "accepted": bool(
+                        service_gpu_release_receipt
+                        and service_gpu_release_receipt.accepted
+                    ),
+                    "path": (
+                        service_gpu_release_receipt.path
+                        if service_gpu_release_receipt
+                        else _text(service_gpu_release_path)
+                    ),
+                    "response": (
+                        service_gpu_release_receipt.response
+                        if service_gpu_release_receipt
+                        else None
+                    ),
+                },
             },
             "inputs": {
                 "audio_host_path": str(audio_host_path),

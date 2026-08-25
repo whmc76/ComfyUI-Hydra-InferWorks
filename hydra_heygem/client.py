@@ -69,6 +69,13 @@ class HeyGemGenerationReceipt:
     final_response: Mapping[str, object]
 
 
+@dataclass(frozen=True)
+class HeyGemGpuReleaseReceipt:
+    path: str
+    accepted: bool
+    response: Mapping[str, object]
+
+
 def _join_url(base_url: str, path: str) -> str:
     normalized_path = str(path or "").strip()
     if normalized_path.startswith(("http://", "https://")):
@@ -239,3 +246,30 @@ class HeyGemClient:
                 message = data.get("msg") or data.get("message") or data.get("status") or "unknown"
                 raise HeyGemClientError(f"heygem_generation_failed:{message}")
             self.sleeper(max(float(poll_interval_seconds), 0.01))
+
+    def release_gpu(
+        self,
+        *,
+        release_path: str = "/v1/system/gpu/release",
+        timeout_seconds: float = 60.0,
+    ) -> HeyGemGpuReleaseReceipt:
+        normalized_path = str(release_path or "").strip()
+        if not normalized_path or normalized_path.lower() in {"off", "none", "disabled"}:
+            raise HeyGemClientError("heygem_gpu_release_path_required")
+        response = self.transport.request_json(
+            "POST",
+            _join_url(self.endpoint.base_url, normalized_path),
+            payload={},
+            timeout_seconds=max(float(timeout_seconds), 0.1),
+        )
+        accepted = _read_code(response) == 10000 and response.get("success") is True
+        if not accepted:
+            message = response.get("msg") or response.get("message") or "unknown"
+            raise HeyGemClientError(
+                f"heygem_gpu_release_rejected:{_read_code(response)}:{message}"
+            )
+        return HeyGemGpuReleaseReceipt(
+            path=normalized_path,
+            accepted=True,
+            response=response,
+        )

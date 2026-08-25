@@ -1,7 +1,7 @@
 {
   "contract_version": "hydra_inferworks_node_manifest.v1",
   "package": "comfyui-hydra-inferworks",
-  "version": "1.1.2",
+  "version": "1.1.3",
   "minimum_comfyui_version": "0.30.0",
   "inference_profiles": "inference-profiles.v1.json",
   "asr_model_attestations": "asr-model-attestations.v1.json",
@@ -68,6 +68,7 @@
     "heygem_service_endpoint_is_runtime_configurable",
     "long_video_output_remains_file_backed",
     "caller_job_identity_correlates_prompt_receipt_and_artifact",
+    "containerized_comfyui_releases_heygem_gpu_via_service_api_without_docker_control",
     "receipts_bind_artifacts_to_sha256"
   ]
 }

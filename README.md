@@ -85,7 +85,8 @@ ComfyUI 本地模型目录读取。它提供：
 - 外部服务或既有 Docker 容器生命周期；
 - 调用方提供的安全 `job_code`；
 - 文件型结果、SHA-256、服务响应和生命周期回执；
-- 任务结束后可选停止精确容器并释放 GPU。
+- 任务结束后可选停止精确容器，或通过 HeyGem 服务的 GPU release API 释放模型显存；
+- 当 ComfyUI 自身运行在容器中时，可使用外部 supervisor 管理 HeyGem，并通过 release API 回收显存，无需把 Docker socket 或 Docker CLI 暴露给插件容器。
 
 它不包含 HeyGem 本体。部署方仍需准备 HeyGem 兼容的 submit/query 服务和共享挂载目录。
 
