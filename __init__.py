@@ -1,5 +1,5 @@
 if __package__:
-    from .nodes import (
+    from .heygem_nodes import (
         NODE_CLASS_MAPPINGS,
         NODE_DISPLAY_NAME_MAPPINGS,
         comfy_entrypoint,
