@@ -4,13 +4,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "comfyui-hydra-inferworks"
-version = "1.1.4"
-description = "Unified HydraMatrix inference nodes for IndexTTS 2.5, Qwen3 ASR, forced alignment, and HeyGem in ComfyUI."
+version = "1.2.0"
+description = "Portable ComfyUI inference nodes for IndexTTS 2.5, Qwen3 ASR, forced alignment, and HeyGem."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { file = "LICENSE" }
 authors = [{ name = "Cyber Dick Lang" }]
-keywords = ["comfyui", "hydramatrix", "indextts", "tts", "asr", "heygem", "avatar"]
+keywords = ["comfyui", "inferworks", "hydramatrix", "indextts", "tts", "asr", "heygem", "avatar"]
 classifiers = [
   "Development Status :: 4 - Beta",
   "License :: OSI Approved :: Apache Software License",

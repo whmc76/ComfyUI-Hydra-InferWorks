@@ -78,6 +78,28 @@ class CapabilityLoaderTests(unittest.TestCase):
         )
         self.assertTrue(all(len(entry["sha256"]) == 64 for entry in manifest["models"]))
 
+    def test_public_workflow_examples_use_portable_placeholders(self):
+        examples = ROOT / "workflow-examples"
+        rendered = "\n".join(
+            path.read_text(encoding="utf-8")
+            for path in sorted(examples.glob("*.json"))
+        )
+        self.assertNotIn("__HYDRA_", rendered)
+        self.assertNotIn("hydramatrix/", rendered)
+
+        heygem = json.loads(
+            (examples / "hydra-heygem-longform-avatar.api.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        inputs = heygem["3"]["inputs"]
+        self.assertEqual(inputs["service_url"], "__INFERWORKS_HEYGEM_SERVICE_URL__")
+        self.assertEqual(inputs["shared_host_root"], "auto")
+        self.assertEqual(inputs["container_data_root"], "auto")
+        self.assertEqual(inputs["container_name"], "auto")
+        self.assertFalse(inputs["release_service_gpu_after"])
+        self.assertEqual(inputs["service_gpu_release_path"], "auto")
+
 
 if __name__ == "__main__":
     unittest.main()

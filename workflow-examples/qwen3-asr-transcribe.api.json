@@ -2,13 +2,13 @@
   "1": {
     "class_type": "LoadAudio",
     "inputs": {
-      "audio": "__HYDRA_AUDIO_INPUT__"
+      "audio": "__INFERWORKS_AUDIO_INPUT__"
     }
   },
   "2": {
     "class_type": "HydraQwen3ASRModelLoader",
     "inputs": {
-      "model_directory": "__HYDRA_LOCAL_MODEL_PATH__",
+      "model_directory": "__INFERWORKS_LOCAL_MODEL_PATH__",
       "forced_aligner_directory": "Qwen3-ASR/Qwen3-ForcedAligner-0.6B",
       "optimization_profile": "transformers_bf16_sdpa",
       "max_inference_batch_size": 32
@@ -47,8 +47,8 @@
         "3",
         2
       ],
-      "filename_prefix": "hydra-inferworks/qwen3-asr/transcript",
-      "source_audio_sha256": "__HYDRA_SOURCE_AUDIO_SHA256__",
+      "filename_prefix": "inferworks/qwen3-asr/transcript",
+      "source_audio_sha256": "__INFERWORKS_SOURCE_AUDIO_SHA256__",
       "model_id": "Qwen/Qwen3-ASR-1.7B",
       "aligner_id": "Qwen/Qwen3-ForcedAligner-0.6B",
       "audio": [

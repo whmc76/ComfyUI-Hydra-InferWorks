@@ -2,7 +2,7 @@
   "1": {
     "class_type": "LoadAudio",
     "inputs": {
-      "audio": "__HYDRA_REFERENCE_AUDIO__"
+      "audio": "__INFERWORKS_REFERENCE_AUDIO__"
     }
   },
   "2": {
@@ -24,7 +24,7 @@
         "2",
         0
       ],
-      "text": "__HYDRA_TEXT__",
+      "text": "__INFERWORKS_TEXT__",
       "reference_audio": [
         "1",
         0
@@ -53,7 +53,7 @@
         "3",
         0
       ],
-      "filename_prefix": "hydra-inferworks/index-tts25/output",
+      "filename_prefix": "inferworks/index-tts25/output",
       "quality": "320k"
     }
   },

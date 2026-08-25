@@ -837,7 +837,7 @@ class HydraTranscriptReceipt:
                 "text": ("STRING", {"multiline": True, "forceInput": True}),
                 "language": ("STRING", {"forceInput": True}),
                 "timestamps": ("STRING", {"multiline": True, "forceInput": True}),
-                "filename_prefix": ("STRING", {"default": "hydramatrix/qwen3-asr/transcript"}),
+                "filename_prefix": ("STRING", {"default": "inferworks/qwen3-asr/transcript"}),
                 "source_audio_sha256": ("STRING", {"default": ""}),
                 "model_id": ("STRING", {"default": "Qwen/Qwen3-ASR-1.7B"}),
                 "aligner_id": ("STRING", {"default": "Qwen/Qwen3-ForcedAligner-0.6B"}),

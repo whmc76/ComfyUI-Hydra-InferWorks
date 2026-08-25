@@ -116,7 +116,7 @@ def test_external_service_gpu_release_fails_closed_without_provider_acceptance()
     client = HeyGemClient(endpoint(), transport=transport)
 
     with pytest.raises(HeyGemClientError, match="heygem_gpu_release_rejected"):
-        client.release_gpu()
+        client.release_gpu(release_path="/v1/system/gpu/release")
 
 
 def test_external_service_gpu_release_fails_closed_on_provider_cleanup_error():
@@ -138,7 +138,7 @@ def test_external_service_gpu_release_fails_closed_on_provider_cleanup_error():
     client = HeyGemClient(endpoint(), transport=transport)
 
     with pytest.raises(HeyGemClientError, match="torch_cleanup_failed:CUDA error"):
-        client.release_gpu()
+        client.release_gpu(release_path="/v1/system/gpu/release")
 
 
 @pytest.mark.parametrize(
@@ -167,7 +167,7 @@ def test_external_service_gpu_release_requires_complete_cuda_cleanup(
     client = HeyGemClient(endpoint(), transport=transport)
 
     with pytest.raises(HeyGemClientError, match="cuda_cleanup_incomplete"):
-        client.release_gpu()
+        client.release_gpu(release_path="/v1/system/gpu/release")
 
 
 def test_external_service_gpu_release_does_not_require_cuda_flags_without_cuda():
@@ -184,7 +184,14 @@ def test_external_service_gpu_release_does_not_require_cuda_flags_without_cuda()
     }
     client = HeyGemClient(endpoint(), transport=ScriptedTransport([response]))
 
-    receipt = client.release_gpu()
+    receipt = client.release_gpu(release_path="/v1/system/gpu/release")
 
     assert receipt.accepted is True
     assert receipt.response == response
+
+
+def test_external_service_gpu_release_requires_an_explicit_route():
+    client = HeyGemClient(endpoint(), transport=ScriptedTransport([]))
+
+    with pytest.raises(HeyGemClientError, match="heygem_gpu_release_path_required"):
+        client.release_gpu()

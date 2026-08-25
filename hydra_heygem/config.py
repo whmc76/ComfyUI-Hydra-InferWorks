@@ -7,13 +7,27 @@ from urllib.parse import urlsplit, urlunsplit
 
 
 DEFAULT_SCHEME = "http"
-DEFAULT_HOST = "127.0.0.1"
-DEFAULT_PORT = 8383
 SERVICE_URL_ENV_KEYS = (
+    "INFERWORKS_HEYGEM_SERVICE_URL",
+    "HEYGEM_SERVICE_URL",
+    "AVATAR_SERVICE_URL",
     "HYDRA_HEYGEM_SERVICE_URL",
     "HYDRA_AVATAR_SERVICE_URL",
-    "AVATAR_SERVICE_URL",
-    "HEYGEM_SERVICE_URL",
+)
+SCHEME_ENV_KEYS = (
+    "INFERWORKS_HEYGEM_SCHEME",
+    "HEYGEM_SCHEME",
+    "HYDRA_HEYGEM_SCHEME",
+)
+HOST_ENV_KEYS = (
+    "INFERWORKS_HEYGEM_HOST",
+    "HEYGEM_HOST",
+    "HYDRA_HEYGEM_HOST",
+)
+PORT_ENV_KEYS = (
+    "INFERWORKS_HEYGEM_PORT",
+    "HEYGEM_PORT",
+    "HYDRA_HEYGEM_PORT",
 )
 
 
@@ -38,8 +52,8 @@ def _is_auto(value: object) -> bool:
     return _text(value).lower() in {"", "auto", "default", "environment", "env"}
 
 
-def _first_environment_url(environ: Mapping[str, str]) -> str:
-    for key in SERVICE_URL_ENV_KEYS:
+def _first_environment_value(environ: Mapping[str, str], keys: tuple[str, ...]) -> str:
+    for key in keys:
         value = _text(environ.get(key))
         if value:
             return value
@@ -93,8 +107,9 @@ def resolve_endpoint_config(
 ) -> EndpointConfig:
     """Resolve a HeyGem endpoint without making any port part of the node contract.
 
-    Precedence is explicit full URL, explicit host/port components, environment
-    full URL, environment components, then compatibility defaults.
+    Precedence is explicit full URL, explicit host/port components, generic
+    InferWorks/HeyGem environment, then Hydra compatibility aliases. No
+    project-specific host or port is implied.
     """
 
     active_environ = process_environ if environ is None else environ
@@ -103,13 +118,19 @@ def resolve_endpoint_config(
 
     explicit_host = None if _is_auto(service_host) else _text(service_host)
     explicit_port = _parse_port(service_port, allow_auto=True)
-    environment_url = _first_environment_url(active_environ)
+    environment_url = _first_environment_value(active_environ, SERVICE_URL_ENV_KEYS)
+    environment_scheme = _first_environment_value(active_environ, SCHEME_ENV_KEYS)
+    environment_host = _first_environment_value(active_environ, HOST_ENV_KEYS)
+    environment_port = _parse_port(
+        _first_environment_value(active_environ, PORT_ENV_KEYS),
+        allow_auto=True,
+    )
 
     if explicit_host is not None or explicit_port is not None:
         environment_config = (
             _parse_url(environment_url, "environment_service_url") if environment_url else None
         )
-        scheme = _text(active_environ.get("HYDRA_HEYGEM_SCHEME")).lower()
+        scheme = environment_scheme.lower()
         if not scheme:
             scheme = environment_config.scheme if environment_config else DEFAULT_SCHEME
         if scheme not in {"http", "https"}:
@@ -117,23 +138,39 @@ def resolve_endpoint_config(
         host = (
             explicit_host
             or (environment_config.host if environment_config else "")
-            or _text(active_environ.get("HYDRA_HEYGEM_HOST"))
-            or DEFAULT_HOST
+            or environment_host
         )
         port = (
             explicit_port
             or (environment_config.port if environment_config else None)
-            or _parse_port(active_environ.get("HYDRA_HEYGEM_PORT"), allow_auto=True)
-            or DEFAULT_PORT
+            or environment_port
         )
+        if not host:
+            raise EndpointConfigError("service_host_required")
+        if port is None:
+            raise EndpointConfigError("service_port_required")
         netloc_host = f"[{host}]" if ":" in host and not host.startswith("[") else host
         return _parse_url(f"{scheme}://{netloc_host}:{port}", "node_host_or_port")
 
     if environment_url:
         return _parse_url(environment_url, "environment_service_url")
 
-    scheme = _text(active_environ.get("HYDRA_HEYGEM_SCHEME")).lower() or DEFAULT_SCHEME
-    host = _text(active_environ.get("HYDRA_HEYGEM_HOST")) or DEFAULT_HOST
-    port = _parse_port(active_environ.get("HYDRA_HEYGEM_PORT"), allow_auto=True) or DEFAULT_PORT
-    return _parse_url(f"{scheme}://{host}:{port}", "environment_components_or_default")
+    if environment_scheme or environment_host or environment_port is not None:
+        scheme = environment_scheme.lower() or DEFAULT_SCHEME
+        if scheme not in {"http", "https"}:
+            raise EndpointConfigError(f"unsupported_service_url_scheme:{scheme}")
+        if not environment_host:
+            raise EndpointConfigError("service_host_required")
+        if environment_port is None:
+            raise EndpointConfigError("service_port_required")
+        netloc_host = (
+            f"[{environment_host}]"
+            if ":" in environment_host and not environment_host.startswith("[")
+            else environment_host
+        )
+        return _parse_url(
+            f"{scheme}://{netloc_host}:{environment_port}",
+            "environment_components",
+        )
 
+    raise EndpointConfigError("service_endpoint_required")

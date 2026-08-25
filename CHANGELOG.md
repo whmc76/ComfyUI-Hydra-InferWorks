@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.2.0 - 2026-08-26
+
+- Make Hydra InferWorks installable in any ComfyUI project without a HydraMatrix runtime.
+- Use `INFERWORKS_*` and upstream `HEYGEM_*` variables as the canonical configuration surface,
+  while retaining existing `HYDRA_*` names as compatibility aliases.
+- Remove implicit HeyGem host/port, `/code/data`, `hm-heygem`, and GPU-release route defaults.
+- Resolve the shared directory independently in the ComfyUI and HeyGem service namespaces,
+  so host, container, remote, Windows, and Linux deployments can provide their own mount paths.
+- Keep all existing `TopTTS25*`, `HydraQwen3*`, and `HydraHeyGem*` class types so published
+  workflows remain compatible.
+- Replace Hydra-only placeholders and output prefixes in the public workflow examples.
+
 ## 1.1.4 - 2026-08-26
 
 - Reject a HeyGem GPU release response when the provider reports a non-empty cleanup error.

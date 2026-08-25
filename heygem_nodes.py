@@ -21,7 +21,12 @@ from .hydra_heygem.client import HeyGemClient
 from .hydra_heygem.config import resolve_endpoint_config
 from .hydra_heygem.lifecycle import DockerContainerLifecycle
 from .hydra_heygem.job_identity import resolve_job_code
-from .hydra_heygem.paths import map_result_to_host, prefer_final_muxed_artifact
+from .hydra_heygem.paths import (
+    map_result_to_host,
+    prefer_final_muxed_artifact,
+    resolve_service_shared_root,
+    resolve_shared_local_root,
+)
 
 
 CONTRACT_VERSION = "hydra_comfyui_heygem_longform_avatar_receipt.v1"
@@ -44,35 +49,33 @@ def _first_environment_value(*keys: str) -> str:
 
 
 def _resolve_shared_host_root(value: object) -> Path:
-    configured = "" if _is_auto(value) else _text(value)
-    configured = configured or _first_environment_value(
-        "HYDRA_HEYGEM_SHARED_HOST_ROOT",
-        "HYDRA_AVATAR_STAGE_DIR",
-        "AVATAR_STAGE_DIR",
-        "EXTERNAL_HEYGEM_STAGE_DIR",
-        "HEYGEM_DATA_DIR",
-    )
-    if not configured:
-        raise ValueError("hydra_heygem_shared_host_root_required")
-    root = Path(configured).expanduser().resolve(strict=False)
-    root.mkdir(parents=True, exist_ok=True)
-    return root
+    return resolve_shared_local_root(value)
 
 
-def _resolve_container_data_root(value: object) -> str:
-    configured = "" if _is_auto(value) else _text(value)
-    configured = configured or _first_environment_value(
-        "HYDRA_HEYGEM_CONTAINER_DATA_ROOT",
-        "HYDRA_AVATAR_CONTAINER_DATA_DIR",
-        "AVATAR_CONTAINER_DATA_DIR",
-        "HEYGEM_CONTAINER_DATA_DIR",
+def _resolve_container_data_root(value: object, shared_root: Path) -> str:
+    return resolve_service_shared_root(
+        value,
+        local_root=shared_root,
     )
-    return (configured or "/code/data").replace("\\", "/").rstrip("/")
 
 
 def _resolve_container_name(value: object) -> str:
     configured = "" if _is_auto(value) else _text(value)
-    return configured or _first_environment_value("HYDRA_HEYGEM_CONTAINER_NAME") or "hm-heygem"
+    return configured or _first_environment_value(
+        "INFERWORKS_HEYGEM_CONTAINER_NAME",
+        "HEYGEM_CONTAINER_NAME",
+        "HYDRA_HEYGEM_CONTAINER_NAME",
+    )
+
+
+def _resolve_service_gpu_release_path(value: object) -> str:
+    configured = "" if _is_auto(value) else _text(value)
+    return configured or _first_environment_value(
+        "INFERWORKS_HEYGEM_GPU_RELEASE_PATH",
+        "HEYGEM_GPU_RELEASE_PATH",
+        "HEYGEM_AV_TRANSFER_CLEANUP_ENDPOINT",
+        "HYDRA_HEYGEM_GPU_RELEASE_PATH",
+    )
 
 
 def _container_path(container_root: str, relative: PurePosixPath) -> str:
@@ -200,7 +203,7 @@ class HydraHeyGemLongformAvatar(io.ComfyNode):
                     min=0,
                     max=65535,
                     step=1,
-                    tooltip="Editable service port. 0 resolves from environment or compatibility default.",
+                    tooltip="Editable service port. 0 requires a configured URL or environment value.",
                 ),
                 io.String.Input("submit_path", default="/easy/submit"),
                 io.String.Input("query_path", default="/easy/query"),
@@ -212,15 +215,29 @@ class HydraHeyGemLongformAvatar(io.ComfyNode):
                 io.String.Input(
                     "shared_host_root",
                     default="auto",
-                    tooltip="Host directory mounted into the HeyGem container. Required via input or environment.",
+                    tooltip=(
+                        "Shared directory as visible to this ComfyUI process. The legacy input name "
+                        "is preserved for workflow compatibility."
+                    ),
                 ),
-                io.String.Input("container_data_root", default="auto"),
+                io.String.Input(
+                    "container_data_root",
+                    default="auto",
+                    tooltip=(
+                        "The same shared directory as addressed by the HeyGem service. Auto uses "
+                        "the ComfyUI-visible path unless configured by environment."
+                    ),
+                ),
                 io.Combo.Input(
                     "lifecycle_mode",
                     options=["external", "docker_existing_container"],
                     default="external",
                 ),
-                io.String.Input("container_name", default="auto"),
+                io.String.Input(
+                    "container_name",
+                    default="auto",
+                    tooltip="Required only for docker_existing_container mode; no container name is implied.",
+                ),
                 io.Boolean.Input("release_comfyui_models", default=True),
                 io.Boolean.Input("stop_container_after", default=False),
                 io.Boolean.Input(
@@ -233,7 +250,11 @@ class HydraHeyGemLongformAvatar(io.ComfyNode):
                 ),
                 io.String.Input(
                     "service_gpu_release_path",
-                    default="/v1/system/gpu/release",
+                    default="auto",
+                    tooltip=(
+                        "Optional deployment-specific cleanup route. Required only when service GPU "
+                        "release is enabled; no HeyGem cleanup extension is implied."
+                    ),
                 ),
                 io.Int.Input("ready_timeout_seconds", default=90, min=1, max=900, step=1),
                 io.Int.Input("generation_timeout_seconds", default=7200, min=10, max=86400, step=10),
@@ -280,8 +301,13 @@ class HydraHeyGemLongformAvatar(io.ComfyNode):
             service_port=service_port,
         )
         shared_root = _resolve_shared_host_root(shared_host_root)
-        container_root = _resolve_container_data_root(container_data_root)
+        container_root = _resolve_container_data_root(container_data_root, shared_root)
         resolved_container_name = _resolve_container_name(container_name)
+        resolved_service_gpu_release_path = _resolve_service_gpu_release_path(
+            service_gpu_release_path
+        )
+        if release_service_gpu_after and not resolved_service_gpu_release_path:
+            raise ValueError("heygem_gpu_release_path_required")
         job_code = resolve_job_code(job_code)
         audio_relative = PurePosixPath("inputs") / "audio" / f"{job_code}.wav"
         video_relative = PurePosixPath("inputs") / "video" / f"{job_code}.mp4"
@@ -359,7 +385,7 @@ class HydraHeyGemLongformAvatar(io.ComfyNode):
                 if client is None:
                     raise ValueError("hydra_heygem_service_gpu_release_client_missing")
                 service_gpu_release_receipt = client.release_gpu(
-                    release_path=service_gpu_release_path,
+                    release_path=resolved_service_gpu_release_path,
                     timeout_seconds=min(max(float(ready_timeout_seconds), 0.1), 120.0),
                 )
 
@@ -398,7 +424,7 @@ class HydraHeyGemLongformAvatar(io.ComfyNode):
                     "path": (
                         service_gpu_release_receipt.path
                         if service_gpu_release_receipt
-                        else _text(service_gpu_release_path)
+                        else resolved_service_gpu_release_path
                     ),
                     "response": (
                         service_gpu_release_receipt.response
@@ -408,9 +434,15 @@ class HydraHeyGemLongformAvatar(io.ComfyNode):
                 },
             },
             "inputs": {
+                "shared_local_root": str(shared_root),
+                "service_shared_root": container_root,
+                "audio_local_path": str(audio_host_path),
+                "audio_service_path": _container_path(container_root, audio_relative),
                 "audio_host_path": str(audio_host_path),
                 "audio_container_path": _container_path(container_root, audio_relative),
                 "audio_sha256": _sha256(audio_host_path),
+                "reference_video_local_path": str(video_host_path),
+                "reference_video_service_path": _container_path(container_root, video_relative),
                 "reference_video_host_path": str(video_host_path),
                 "reference_video_container_path": _container_path(container_root, video_relative),
                 "reference_video_sha256": _sha256(video_host_path),

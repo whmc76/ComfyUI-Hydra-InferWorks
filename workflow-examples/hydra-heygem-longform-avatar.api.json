@@ -22,7 +22,8 @@
         "2",
         0
       ],
-      "service_url": "auto",
+      "job_code": "auto",
+      "service_url": "__INFERWORKS_HEYGEM_SERVICE_URL__",
       "service_host": "auto",
       "service_port": 0,
       "submit_path": "/easy/submit",
@@ -34,6 +35,8 @@
       "container_name": "auto",
       "release_comfyui_models": true,
       "stop_container_after": false,
+      "release_service_gpu_after": false,
+      "service_gpu_release_path": "auto",
       "ready_timeout_seconds": 90,
       "generation_timeout_seconds": 7200,
       "poll_interval_seconds": 3.0,

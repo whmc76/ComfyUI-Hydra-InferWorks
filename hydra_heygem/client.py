@@ -250,7 +250,7 @@ class HeyGemClient:
     def release_gpu(
         self,
         *,
-        release_path: str = "/v1/system/gpu/release",
+        release_path: str = "",
         timeout_seconds: float = 60.0,
     ) -> HeyGemGpuReleaseReceipt:
         normalized_path = str(release_path or "").strip()

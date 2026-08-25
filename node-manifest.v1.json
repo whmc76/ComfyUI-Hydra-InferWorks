@@ -1,7 +1,7 @@
 {
   "contract_version": "hydra_inferworks_node_manifest.v1",
   "package": "comfyui-hydra-inferworks",
-  "version": "1.1.4",
+  "version": "1.2.0",
   "minimum_comfyui_version": "0.30.0",
   "inference_profiles": "inference-profiles.v1.json",
   "asr_model_attestations": "asr-model-attestations.v1.json",
@@ -53,7 +53,16 @@
       "ComfyUI-Top-TTS",
       "ComfyUI-Hydra-Audio",
       "ComfyUI-Hydra-HeyGem"
-    ]
+    ],
+    "hydra_environment_aliases_are_legacy_fallbacks": true
+  },
+  "portability": {
+    "requires_hydramatrix_runtime": false,
+    "heygem_endpoint_requires_explicit_input_or_environment": true,
+    "heygem_endpoint_has_implicit_port": false,
+    "shared_storage_uses_separate_comfyui_and_service_namespaces": true,
+    "docker_lifecycle_requires_explicit_container_name": true,
+    "service_gpu_release_requires_explicit_route": true
   },
   "invariants": [
     "capability_import_failures_are_isolated",
@@ -66,6 +75,9 @@
     "asr_long_audio_timestamps_restore_one_global_timeline",
     "locked_script_alignment_fails_closed_on_anchor_mismatch",
     "heygem_service_endpoint_is_runtime_configurable",
+    "heygem_service_endpoint_has_no_project_specific_default",
+    "heygem_shared_storage_namespaces_are_explicit",
+    "hydramatrix_runtime_is_not_required",
     "long_video_output_remains_file_backed",
     "caller_job_identity_correlates_prompt_receipt_and_artifact",
     "containerized_comfyui_releases_heygem_gpu_via_service_api_without_docker_control",

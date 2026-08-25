@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 
 import pytest
@@ -6,7 +7,54 @@ from hydra_heygem.paths import (
     ArtifactPathError,
     map_result_to_host,
     prefer_final_muxed_artifact,
+    resolve_service_shared_root,
+    resolve_shared_local_root,
 )
+
+
+def test_shared_local_root_uses_generic_inferworks_configuration(tmp_path):
+    actual = resolve_shared_local_root(
+        "auto",
+        environ={"INFERWORKS_HEYGEM_SHARED_ROOT": str(tmp_path)},
+    )
+
+    assert actual == tmp_path.resolve()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="requires a POSIX filesystem namespace")
+def test_posix_process_maps_windows_host_value_only_through_explicit_local_root(tmp_path):
+    actual = resolve_shared_local_root(
+        "D:/shared/heygem",
+        environ={"INFERWORKS_HEYGEM_SHARED_LOCAL_ROOT": str(tmp_path)},
+        platform_name="posix",
+    )
+
+    assert actual == tmp_path.resolve()
+
+
+def test_posix_process_rejects_unmapped_windows_host_value():
+    with pytest.raises(ArtifactPathError, match="shared_root_namespace_mismatch"):
+        resolve_shared_local_root(
+            "D:/shared/heygem",
+            environ={},
+            platform_name="posix",
+        )
+
+
+def test_service_shared_root_defaults_to_the_comfyui_visible_root(tmp_path):
+    assert resolve_service_shared_root(
+        "auto",
+        local_root=tmp_path,
+        environ={},
+    ) == str(tmp_path.resolve()).replace("\\", "/")
+
+
+def test_service_shared_root_supports_a_generic_remote_namespace(tmp_path):
+    assert resolve_service_shared_root(
+        "auto",
+        local_root=tmp_path,
+        environ={"INFERWORKS_HEYGEM_SERVICE_SHARED_ROOT": "/srv/heygem-data"},
+    ) == "/srv/heygem-data"
 
 
 def test_container_result_is_mapped_into_the_configured_shared_root(tmp_path):

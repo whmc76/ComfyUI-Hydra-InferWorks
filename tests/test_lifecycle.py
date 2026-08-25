@@ -23,7 +23,7 @@ class ScriptedRunner:
 
 def test_external_mode_never_touches_docker():
     runner = ScriptedRunner()
-    manager = DockerContainerLifecycle("external", "hm-heygem", runner=runner)
+    manager = DockerContainerLifecycle("external", "", runner=runner)
 
     prepared = manager.prepare()
     released = manager.release(stop_after_job=True)
@@ -32,6 +32,11 @@ def test_external_mode_never_touches_docker():
     assert prepared.started is False
     assert released.stopped is False
     assert runner.calls == []
+
+
+def test_managed_mode_requires_an_explicit_container_name():
+    with pytest.raises(ContainerLifecycleError, match="container_name_required"):
+        DockerContainerLifecycle("docker_existing_container", "", runner=ScriptedRunner())
 
 
 def test_managed_mode_starts_configured_container_and_can_release_it():

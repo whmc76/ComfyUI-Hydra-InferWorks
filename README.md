@@ -2,13 +2,18 @@
 
 [中文](#中文) · [English](#english)
 
-Hydra InferWorks 是 HydraMatrix 的统一 ComfyUI 推理插件。一个插件提供三组彼此隔离的能力：
+Hydra InferWorks 是可独立安装的统一 ComfyUI 推理插件。它可以用于任意 ComfyUI 项目，
+不依赖 HydraMatrix 的运行时、数据库、队列、固定端口或目录。Hydra 是产品品牌与受支持的
+集成方之一，不是运行前置条件。一个插件提供三组彼此隔离的能力：
 
 - **TTS**：IndexTTS 2.5 本地推理、零样本音色克隆、多语言与情感控制；
 - **ASR**：Qwen3-ASR 长音频转写、锁定脚本强制对齐和不可变 JSON 回执；
 - **Avatar**：通过可配置服务端点执行 HeyGem 长视频数字人生成，并保留文件与哈希回执。
 
 某个可选能力缺少依赖时，只禁用该能力；其他已满足依赖的节点仍可加载。插件不包含模型权重、HeyGem 服务或容器镜像。
+现有 `TopTTS25*`、`HydraQwen3*`、`HydraTranscriptReceipt` 与
+`HydraHeyGemLongformAvatar` 名称属于已发布工作流 ABI，因此继续保留；这些名称不会引入
+HydraMatrix 运行依赖。
 
 ## 中文
 
@@ -90,6 +95,35 @@ ComfyUI 本地模型目录读取。它提供：
 
 它不包含 HeyGem 本体。部署方仍需准备 HeyGem 兼容的 submit/query 服务和共享挂载目录。
 
+#### 独立项目配置
+
+InferWorks 不猜测 HeyGem 的地址。请在节点中填写完整 `service_url`，或者配置环境变量：
+
+```bash
+INFERWORKS_HEYGEM_SERVICE_URL=http://127.0.0.1:8383
+```
+
+也可以分别设置 `INFERWORKS_HEYGEM_SCHEME`、`INFERWORKS_HEYGEM_HOST` 和
+`INFERWORKS_HEYGEM_PORT`。端口 `8383` 只是上面的示例值，不是插件默认值。
+
+ComfyUI 与 HeyGem 必须看见同一份共享存储，但两边的路径可以不同。例如 ComfyUI 在主机、
+HeyGem 在容器中时：
+
+```bash
+INFERWORKS_HEYGEM_SHARED_LOCAL_ROOT=/mnt/heygem-data
+INFERWORKS_HEYGEM_SERVICE_SHARED_ROOT=/code/data
+```
+
+如果两者运行在同一个文件系统命名空间，只设置 `INFERWORKS_HEYGEM_SHARED_LOCAL_ROOT` 即可，
+服务侧路径默认与其相同。`external` 生命周期不需要容器名；选择
+`docker_existing_container` 时必须显式提供 `container_name`。服务 GPU 清理属于部署扩展，
+默认关闭；启用时必须显式提供 `service_gpu_release_path` 或
+`INFERWORKS_HEYGEM_GPU_RELEASE_PATH`。
+
+配置优先级为：节点显式输入 → `INFERWORKS_*` → 通用 `HEYGEM_*` → 旧
+`HYDRA_*` 兼容别名。HydraMatrix 自己使用的端口、Windows 目录、`/code/data`、容器名和清理
+路由都由 Hydra 适配层注入，不是公共插件默认值。
+
 ### 能力隔离
 
 插件入口分别加载 `tts_nodes.py`、`asr_nodes.py` 和 `heygem_nodes.py`。加载结果公开在 `CAPABILITY_STATUS` 中。缺少 ASR provider、HeyGem 新版 Comfy API 或 TTS Python 依赖时，错误会绑定到对应能力，而不会删除其他成功加载的节点。
@@ -109,10 +143,22 @@ Hydra InferWorks 自研集成代码使用 Apache-2.0。仓库中固定的 IndexT
 
 ## English
 
-Hydra InferWorks is a unified ComfyUI inference node pack for HydraMatrix. It combines fully local IndexTTS 2.5 speech synthesis, Hydra-owned long-audio Qwen3-ASR/forced-alignment receipt nodes, and the file-backed HeyGem long-form avatar adapter. Capability imports are isolated so one missing optional dependency does not disable the remaining modules.
+Hydra InferWorks is a portable, unified ComfyUI inference node pack. It can be installed in any
+ComfyUI project and has no runtime dependency on HydraMatrix, its database, queues, ports, or
+filesystem layout. It combines fully local IndexTTS 2.5 speech synthesis, long-audio Qwen3-ASR
+and forced-alignment receipt nodes, and a file-backed HeyGem long-form avatar adapter. Capability
+imports are isolated so one missing optional dependency does not disable the remaining modules.
 
 Install the repository and Python requirements, run `install.py` for the private IndexTTS compatibility environment, then download the official IndexTTS 2.5 weights only after accepting `UPSTREAM_MODEL_LICENSE.txt`. Hydra InferWorks owns the Qwen3-ASR loader and pins the official `qwen-asr` package; HeyGem still requires an existing compatible service.
 
 Production profiles prefer BF16 and explicit optimized attention/compilation backends. Requested acceleration fails closed when unavailable. TTS generation reports the executed runtime profile, while production ASR receipts require typed execution evidence and exact official model-file attestations instead of trusting caller-provided metadata. INT8/INT4 remains outside production admission until model-specific quality evidence exists. HeyGem GPU release receipts reject non-empty provider cleanup errors and, when CUDA is available, require explicit success for both cache and IPC cleanup.
 
-Existing `TopTTS25*`, `HydraQwen3*`, `HydraTranscriptReceipt`, and `HydraHeyGemLongformAvatar` class types are preserved for workflow compatibility; `HydraQwen3ASRModelLoader` is the new unified loader.
+HeyGem has no implicit endpoint, port, container name, shared mount, or GPU cleanup route. Configure
+those values in the node or with canonical `INFERWORKS_HEYGEM_*` / upstream `HEYGEM_*`
+environment variables. Legacy `HYDRA_*` variables remain compatibility fallbacks. Separate
+`INFERWORKS_HEYGEM_SHARED_LOCAL_ROOT` and `INFERWORKS_HEYGEM_SERVICE_SHARED_ROOT` values support
+host/container and cross-platform mount namespaces.
+
+Existing `TopTTS25*`, `HydraQwen3*`, `HydraTranscriptReceipt`, and `HydraHeyGemLongformAvatar`
+class types are preserved as published workflow ABI; their names do not require HydraMatrix.
+`HydraQwen3ASRModelLoader` is the unified loader.
