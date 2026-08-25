@@ -74,6 +74,12 @@ ComfyUI 本地模型目录读取。它提供：
 - `HydraQwen3ForcedAlign`：使用 ASR 锚点分块对齐调用方锁定文本；
 - `HydraTranscriptReceipt`：把源音频哈希、模型身份、时间戳和分块证据写入不可变 JSON 回执。
 
+生产时间线只接受 Qwen3 ForcedAligner 返回的原生字符/词单元。插件会在上游的时间戳修复逻辑
+运行前检查原始 token：一旦发现逆序或无效值就失败，不允许最近邻修补或线性插值。插件也不做
+平均分配、字符比例投影、模糊文本映射、时间缩放或越界截断；分块只允许加上真实音频切片的
+起始偏移。锁定文本、锚点文本和原生单元必须精确覆盖（忽略 Unicode 兼容差异、空白与标点），
+否则不会生成生产回执。展示层如需合并字幕，只能合并连续的原生单元，不能切开或重分配时间。
+
 模型权重应放在工作流配置的本地路径。生产工作流固定使用 `Qwen/Qwen3-ASR-1.7B` 与 `Qwen/Qwen3-ForcedAligner-0.6B`，
 并在首次加载时核对随插件发布的 18 项官方权重、配置、processor 与 tokenizer 文件大小及 SHA-256。转写/对齐节点的 typed execution evidence
 会绑定实际模型、音频内容、文本、语言与时间戳；仅有调用方字符串 metadata 的旧图只会得到 `completed_unverified` 回执。
@@ -151,7 +157,7 @@ imports are isolated so one missing optional dependency does not disable the rem
 
 Install the repository and Python requirements, run `install.py` for the private IndexTTS compatibility environment, then download the official IndexTTS 2.5 weights only after accepting `UPSTREAM_MODEL_LICENSE.txt`. Hydra InferWorks owns the Qwen3-ASR loader and pins the official `qwen-asr` package; HeyGem still requires an existing compatible service.
 
-Production profiles prefer BF16 and explicit optimized attention/compilation backends. Requested acceleration fails closed when unavailable. TTS generation reports the executed runtime profile, while production ASR receipts require typed execution evidence and exact official model-file attestations instead of trusting caller-provided metadata. INT8/INT4 remains outside production admission until model-specific quality evidence exists. HeyGem GPU release receipts reject non-empty provider cleanup errors and, when CUDA is available, require explicit success for both cache and IPC cleanup.
+Production profiles prefer BF16 and explicit optimized attention/compilation backends. Requested acceleration fails closed when unavailable. TTS generation reports the executed runtime profile, while production ASR receipts require typed execution evidence and exact official model-file attestations instead of trusting caller-provided metadata. ASR timing accepts only native Qwen3 ForcedAligner units: upstream repair, interpolation, averaging, fuzzy projection, scaling, and clamping are rejected, while chunk merging may add only the observed audio-slice offset. INT8/INT4 remains outside production admission until model-specific quality evidence exists. HeyGem GPU release receipts reject non-empty provider cleanup errors and, when CUDA is available, require explicit success for both cache and IPC cleanup.
 
 HeyGem has no implicit endpoint, port, container name, shared mount, or GPU cleanup route. Configure
 those values in the node or with canonical `INFERWORKS_HEYGEM_*` / upstream `HEYGEM_*`

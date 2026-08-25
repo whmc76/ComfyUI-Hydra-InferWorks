@@ -5,7 +5,6 @@ import os
 import re
 import sys
 import time
-from difflib import SequenceMatcher
 from pathlib import Path
 
 import folder_paths
@@ -364,6 +363,7 @@ class HydraQwen3ASRModelLoader:
                 device_map=str(device),
                 attn_implementation=attention,
             )
+        _install_strict_timestamp_guard(model)
         runtime_profile = _observed_asr_runtime(model, profile_key, selected, attestation)
         model._hydra_inference_profile = runtime_profile
         model._hydra_model_identity = {
@@ -396,18 +396,20 @@ def _safe_prefix(value):
 
 def _parse_timestamps(value):
     segments = []
-    previous_start = -1.0
-    for line in _text(value).splitlines():
+    previous_end = 0.0
+    for line_number, line in enumerate(_text(value).splitlines(), start=1):
+        if not line.strip():
+            continue
         match = re.match(r"^\s*(\d+(?:\.\d+)?)\s*-\s*(\d+(?:\.\d+)?)\s*:\s*(.*?)\s*$", line)
         if not match:
-            continue
+            raise ValueError(f"hydra_transcript_receipt_timestamp_line_invalid:{line_number}")
         start = float(match.group(1))
         end = float(match.group(2))
-        if end < start:
+        if end <= start:
             raise ValueError("hydra_transcript_receipt_timestamp_order_invalid")
-        if start < previous_start:
-            raise ValueError("hydra_transcript_receipt_timestamp_monotonicity_invalid")
-        previous_start = start
+        if start < previous_end:
+            raise ValueError("hydra_transcript_receipt_timestamp_overlap_invalid")
+        previous_end = end
         segments.append({
             "index": len(segments) + 1,
             "start_seconds": start,
@@ -470,6 +472,12 @@ def _execution_evidence(
             json.dumps(execution_metadata, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
         ).hexdigest(),
         "execution_elapsed_ms": round(float(elapsed_ms), 3),
+        "timestamp_provenance": _text(execution_metadata.get("timestamp_provenance")) or None,
+        "estimated_timestamps": execution_metadata.get("estimated_timestamps"),
+        "timestamp_transform": _text(execution_metadata.get("timestamp_transform")) or None,
+        "upstream_timestamp_repair_policy": _text(
+            execution_metadata.get("upstream_timestamp_repair_policy")
+        ) or None,
     })
 
 
@@ -478,22 +486,31 @@ def _normalized_characters(value):
     return [(character, index) for index, character in enumerate(characters) if character.isalnum()]
 
 
-def _character_error_rate(expected, observed):
-    left = [entry[0] for entry in _normalized_characters(expected)]
-    right = [entry[0] for entry in _normalized_characters(observed)]
-    if not left:
-        return 0.0 if not right else 1.0
-    previous = list(range(len(right) + 1))
-    for left_index, left_character in enumerate(left, start=1):
-        current = [left_index]
-        for right_index, right_character in enumerate(right, start=1):
-            current.append(min(
-                current[-1] + 1,
-                previous[right_index] + 1,
-                previous[right_index - 1] + (0 if left_character == right_character else 1),
-            ))
-        previous = current
-    return previous[-1] / len(left)
+def _strict_timestamp_values(data):
+    values = data.tolist() if hasattr(data, "tolist") else list(data)
+    normalized = [float(value) for value in values]
+    if any(not np.isfinite(value) or value < 0 for value in normalized):
+        raise ValueError("hydra_qwen3_forced_align_raw_timestamp_invalid")
+    if any(current < previous for previous, current in zip(normalized, normalized[1:])):
+        raise ValueError("hydra_qwen3_forced_align_upstream_timestamp_repair_forbidden")
+    return [int(value) for value in normalized]
+
+
+def _install_strict_timestamp_guard(model):
+    aligner = getattr(model, "forced_aligner", None)
+    processor = getattr(aligner, "aligner_processor", None)
+    original = getattr(processor, "fix_timestamp", None)
+    if processor is None or not callable(original):
+        raise ValueError("hydra_qwen3_forced_align_timestamp_guard_unavailable")
+    if getattr(processor, "_inferworks_strict_timestamp_guard", False):
+        return
+
+    def reject_repair(data):
+        return _strict_timestamp_values(data)
+
+    processor.fix_timestamp = reject_repair
+    processor._inferworks_strict_timestamp_guard = True
+    processor._inferworks_original_fix_timestamp = original
 
 
 def _anchor_groups(segments, max_chunk_seconds):
@@ -511,45 +528,24 @@ def _anchor_groups(segments, max_chunk_seconds):
     return groups
 
 
-def _map_anchor_boundary(opcodes, anchor_boundary, locked_length):
-    for _, anchor_start, anchor_end, locked_start, locked_end in opcodes:
-        if anchor_boundary <= anchor_end:
-            anchor_span = max(1, anchor_end - anchor_start)
-            ratio = max(0.0, min(1.0, (anchor_boundary - anchor_start) / anchor_span))
-            return round(locked_start + ratio * (locked_end - locked_start))
-    return locked_length
-
-
-def _locked_text_slices(locked_text, groups, maximum_character_error_rate):
+def _locked_text_slices(locked_text, groups):
     anchor_texts = ["".join(segment["text"] for segment in group) for group in groups]
-    anchor_text = "".join(anchor_texts)
-    error_rate = _character_error_rate(locked_text, anchor_text)
-    if error_rate > maximum_character_error_rate:
-        raise ValueError(f"hydra_qwen3_forced_align_anchor_text_mismatch:{error_rate:.4f}")
-    anchor_normalized = _normalized_characters(anchor_text)
+    anchor_normalized = _normalized_characters("".join(anchor_texts))
     locked_normalized = _normalized_characters(locked_text)
     if not anchor_normalized or not locked_normalized:
         raise ValueError("hydra_qwen3_forced_align_anchor_text_missing")
-    matcher = SequenceMatcher(
-        None,
-        [entry[0] for entry in anchor_normalized],
-        [entry[0] for entry in locked_normalized],
-        autojunk=False,
-    )
-    opcodes = matcher.get_opcodes()
+    if [entry[0] for entry in anchor_normalized] != [entry[0] for entry in locked_normalized]:
+        raise ValueError("hydra_qwen3_forced_align_anchor_text_not_exact")
     locked_characters = list(_text(locked_text))
     locked_origin_indices = [entry[1] for entry in locked_normalized]
-    anchor_cursor = 0
+    normalized_cursor = 0
     original_boundaries = [0]
     for group_text in anchor_texts[:-1]:
-        anchor_cursor += len(_normalized_characters(group_text))
-        locked_boundary = _map_anchor_boundary(opcodes, anchor_cursor, len(locked_normalized))
-        if locked_boundary <= 0:
-            original_boundary = 0
-        elif locked_boundary >= len(locked_origin_indices):
+        normalized_cursor += len(_normalized_characters(group_text))
+        if normalized_cursor >= len(locked_origin_indices):
             original_boundary = len(locked_characters)
         else:
-            original_boundary = locked_origin_indices[locked_boundary]
+            original_boundary = locked_origin_indices[normalized_cursor]
         original_boundaries.append(max(original_boundaries[-1], original_boundary))
     original_boundaries.append(len(locked_characters))
     slices = [
@@ -558,7 +554,30 @@ def _locked_text_slices(locked_text, groups, maximum_character_error_rate):
     ]
     if any(not _normalized_characters(value) for value in slices):
         raise ValueError("hydra_qwen3_forced_align_locked_chunk_empty")
-    return slices, error_rate
+    return slices
+
+
+def _validated_native_items(items, local_duration, sample_rate, error_prefix):
+    tolerance = max(1e-6, 1.0 / max(1, int(sample_rate)))
+    validated = []
+    previous_end = 0.0
+    for item in items:
+        item_text = _text(getattr(item, "text", ""))
+        if not item_text:
+            continue
+        start = float(getattr(item, "start_time"))
+        end = float(getattr(item, "end_time"))
+        if not np.isfinite(start) or not np.isfinite(end) or start < 0 or end <= start:
+            raise ValueError(f"{error_prefix}_native_timestamp_invalid")
+        if start + tolerance < previous_end:
+            raise ValueError(f"{error_prefix}_native_timestamp_non_monotonic")
+        if end > local_duration + tolerance:
+            raise ValueError(f"{error_prefix}_native_timestamp_out_of_bounds")
+        previous_end = end
+        validated.append((item_text, start, end))
+    if not validated:
+        raise ValueError(f"{error_prefix}_chunk_timestamps_missing")
+    return validated
 
 
 def _audio_chunk_boundaries(waveform, sample_rate, max_chunk_seconds, search_seconds=8):
@@ -619,6 +638,8 @@ class HydraQwen3LongAsrTranscribe:
         silence_search_seconds=8,
     ):
         waveform, sample_rate = _audio_tuple(audio)
+        if return_timestamps:
+            _install_strict_timestamp_guard(model)
         _synchronize_model_device(model)
         execution_started = time.perf_counter()
         chunk_limit = max(30, min(150, int(max_chunk_seconds)))
@@ -645,7 +666,7 @@ class HydraQwen3LongAsrTranscribe:
                 context=_text(context) or None,
                 return_time_stamps=bool(return_timestamps),
             )
-            if not results or not _text(getattr(results[0], "text", "")):
+            if not results or len(results) != 1 or not _text(getattr(results[0], "text", "")):
                 raise ValueError(f"hydra_qwen3_long_asr_chunk_result_missing:{index + 1}")
             result = results[0]
             chunk_text = _text(result.text)
@@ -656,10 +677,20 @@ class HydraQwen3LongAsrTranscribe:
             if return_timestamps:
                 if not time_stamps:
                     raise ValueError(f"hydra_qwen3_long_asr_chunk_timestamps_missing:{index + 1}")
+                native_items = _validated_native_items(
+                    time_stamps,
+                    (end_sample - start_sample) / sample_rate,
+                    sample_rate,
+                    f"hydra_qwen3_long_asr_chunk_{index + 1}",
+                )
+                if (
+                    [entry[0] for entry in _normalized_characters(chunk_text)] !=
+                    [entry[0] for entry in _normalized_characters("".join(item[0] for item in native_items))]
+                ):
+                    raise ValueError(f"hydra_qwen3_long_asr_chunk_native_text_not_exact:{index + 1}")
                 lines.extend(
-                    f"{start_seconds + float(item.start_time):.3f}-{start_seconds + float(item.end_time):.3f}: {_text(item.text)}"
-                    for item in time_stamps
-                    if _text(getattr(item, "text", ""))
+                    f"{start_seconds + item_start:.6f}-{start_seconds + item_end:.6f}: {item_text}"
+                    for item_text, item_start, item_end in native_items
                 )
             chunk_receipts.append({
                 "index": index + 1,
@@ -667,6 +698,8 @@ class HydraQwen3LongAsrTranscribe:
                 "end_seconds": round(end_seconds, 6),
                 "text_sha256": hashlib.sha256(chunk_text.encode("utf-8")).hexdigest(),
                 "timestamp_count": len(time_stamps),
+                "timestamp_transform": "offset_only",
+                "estimated_timestamps": False,
             })
         transcript = "".join(texts)
         timestamp_text = "\n".join(lines)
@@ -679,6 +712,10 @@ class HydraQwen3LongAsrTranscribe:
             "actual_chunk_count": len(chunk_receipts),
             "max_chunk_seconds": chunk_limit,
             "split_strategy": "lowest_rms_before_hard_limit",
+            "timestamp_provenance": "qwen3_forced_aligner_native",
+            "estimated_timestamps": False,
+            "timestamp_transform": "offset_only",
+            "upstream_timestamp_repair_policy": "reject_non_monotonic_raw_tokens",
             "chunks": chunk_receipts,
         }
         evidence = _execution_evidence(
@@ -708,8 +745,8 @@ class HydraQwen3ForcedAlign:
             "optional": {
                 "anchor_text": ("STRING", {"multiline": True, "forceInput": True}),
                 "anchor_timestamps": ("STRING", {"multiline": True, "forceInput": True}),
-                "max_chunk_seconds": ("INT", {"default": 150, "min": 30, "max": 170}),
-                "maximum_anchor_character_error_rate": ("FLOAT", {"default": 0.45, "min": 0.0, "max": 1.0, "step": 0.01}),
+                "max_chunk_seconds": ("INT", {"default": 300, "min": 30, "max": 300}),
+                "maximum_anchor_character_error_rate": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 1.0, "step": 0.01}),
             },
         }
 
@@ -726,8 +763,8 @@ class HydraQwen3ForcedAlign:
         language,
         anchor_text="",
         anchor_timestamps="",
-        max_chunk_seconds=150,
-        maximum_anchor_character_error_rate=0.45,
+        max_chunk_seconds=300,
+        maximum_anchor_character_error_rate=0.0,
     ):
         transcript = _text(locked_text)
         resolved_language = _text(language)
@@ -738,45 +775,47 @@ class HydraQwen3ForcedAlign:
         aligner = getattr(model, "forced_aligner", None)
         if aligner is None:
             raise ValueError("hydra_qwen3_forced_aligner_model_missing")
+        _install_strict_timestamp_guard(model)
         waveform, sample_rate = _audio_tuple(audio)
         _synchronize_model_device(model)
         execution_started = time.perf_counter()
         duration_seconds = len(waveform) / sample_rate
-        chunk_limit = max(30, min(170, int(max_chunk_seconds)))
-        anchor_error_rate = None
+        chunk_limit = max(30, min(300, int(max_chunk_seconds)))
+        anchor_text_match = "not_required_single_chunk"
         if duration_seconds <= chunk_limit:
             plans = [(0.0, duration_seconds, transcript)]
         else:
             anchors = _parse_timestamps(anchor_timestamps)
             if not _text(anchor_text) or not anchors:
                 raise ValueError("hydra_qwen3_forced_align_long_audio_anchors_required")
+            if (
+                [entry[0] for entry in _normalized_characters(anchor_text)] !=
+                [entry[0] for entry in _normalized_characters("".join(item["text"] for item in anchors))]
+            ):
+                raise ValueError("hydra_qwen3_forced_align_anchor_timestamp_text_not_exact")
             groups = _anchor_groups(anchors, chunk_limit)
-            locked_slices, anchor_error_rate = _locked_text_slices(
-                transcript,
-                groups,
-                float(maximum_anchor_character_error_rate),
-            )
-            boundaries = [0.0]
-            for index in range(len(groups) - 1):
-                current_end = groups[index][-1]["end_seconds"]
-                next_start = groups[index + 1][0]["start_seconds"]
-                boundaries.append(max(boundaries[-1], min(duration_seconds, (current_end + next_start) / 2)))
-            boundaries.append(duration_seconds)
+            locked_slices = _locked_text_slices(transcript, groups)
+            anchor_text_match = "exact_normalized"
             plans = [
-                (boundaries[index], boundaries[index + 1], locked_slices[index])
+                (groups[index][0]["start_seconds"], groups[index][-1]["end_seconds"], locked_slices[index])
                 for index in range(len(groups))
             ]
         lines = []
         alignment_chunk_receipts = []
+        previous_global_end = 0.0
         for chunk_index, (start_seconds, end_seconds, chunk_text) in enumerate(plans, start=1):
+            if start_seconds < 0 or end_seconds <= start_seconds or end_seconds > duration_seconds:
+                raise ValueError("hydra_qwen3_forced_align_anchor_timestamp_out_of_bounds")
             start_sample = max(0, min(len(waveform), round(start_seconds * sample_rate)))
             end_sample = max(start_sample + 1, min(len(waveform), round(end_seconds * sample_rate)))
+            slice_start_seconds = start_sample / sample_rate
+            slice_end_seconds = end_sample / sample_rate
             results = aligner.align(
                 audio=(waveform[start_sample:end_sample], sample_rate),
                 text=chunk_text,
                 language=resolved_language,
             )
-            if not results:
+            if not results or len(results) != 1:
                 raise ValueError("hydra_qwen3_forced_align_result_missing")
             items = [
                 item for item in (getattr(results[0], "items", results[0]) or [])
@@ -784,21 +823,33 @@ class HydraQwen3ForcedAlign:
             ]
             if not items:
                 raise ValueError("hydra_qwen3_forced_align_chunk_timestamps_missing")
-            local_duration = max(0.001, end_seconds - start_seconds)
-            predicted_duration = max(float(item.end_time) for item in items)
-            timestamp_scale = min(1.0, local_duration / predicted_duration) if predicted_duration > 0 else 1.0
-            lines.extend(
-                f"{min(end_seconds, start_seconds + float(item.start_time) * timestamp_scale):.3f}-"
-                f"{min(end_seconds, start_seconds + float(item.end_time) * timestamp_scale):.3f}: {_text(item.text)}"
-                for item in items
+            local_duration = (end_sample - start_sample) / sample_rate
+            native_items = _validated_native_items(
+                items,
+                local_duration,
+                sample_rate,
+                "hydra_qwen3_forced_align",
             )
+            if (
+                [entry[0] for entry in _normalized_characters(chunk_text)] !=
+                [entry[0] for entry in _normalized_characters("".join(item[0] for item in native_items))]
+            ):
+                raise ValueError("hydra_qwen3_forced_align_native_text_not_exact")
+            for item_text, item_start, item_end in native_items:
+                global_start = slice_start_seconds + item_start
+                global_end = slice_start_seconds + item_end
+                if global_start + max(1e-6, 1.0 / sample_rate) < previous_global_end:
+                    raise ValueError("hydra_qwen3_forced_align_global_timestamp_non_monotonic")
+                previous_global_end = global_end
+                lines.append(f"{global_start:.6f}-{global_end:.6f}: {item_text}")
             alignment_chunk_receipts.append({
                 "index": chunk_index,
-                "start_seconds": round(start_seconds, 6),
-                "end_seconds": round(end_seconds, 6),
+                "start_seconds": round(slice_start_seconds, 6),
+                "end_seconds": round(slice_end_seconds, 6),
                 "locked_text_sha256": hashlib.sha256(chunk_text.encode("utf-8")).hexdigest(),
-                "timestamp_scale": round(timestamp_scale, 8),
-                "predicted_duration_seconds": round(predicted_duration, 6),
+                "timestamp_transform": "offset_only",
+                "estimated_timestamps": False,
+                "native_item_count": len(native_items),
             })
         if not lines:
             raise ValueError("hydra_qwen3_forced_align_timestamps_missing")
@@ -811,8 +862,12 @@ class HydraQwen3ForcedAlign:
             "automatic_chunking": len(plans) > 1,
             "actual_chunk_count": len(plans),
             "max_chunk_seconds": chunk_limit,
-            "split_strategy": "asr_timestamp_anchor_groups",
-            "anchor_character_error_rate": round(anchor_error_rate, 6) if anchor_error_rate is not None else None,
+            "split_strategy": "exact_asr_timestamp_anchor_groups",
+            "anchor_text_match": anchor_text_match,
+            "timestamp_provenance": "qwen3_forced_aligner_native",
+            "estimated_timestamps": False,
+            "timestamp_transform": "offset_only",
+            "upstream_timestamp_repair_policy": "reject_non_monotonic_raw_tokens",
             "chunks": alignment_chunk_receipts,
         }
         evidence = _execution_evidence(
@@ -844,7 +899,7 @@ class HydraTranscriptReceipt:
             },
             "optional": {
                 "audio": ("AUDIO",),
-                "processing_mode": ("STRING", {"default": "qwen3_asr_native_chunk_merge"}),
+                "processing_mode": ("STRING", {"default": "qwen3_asr_plus_forced_aligner_chunk_merge"}),
                 "max_chunk_seconds": ("INT", {"default": 180, "min": 30, "max": 1200}),
                 "strict_alignment": ("BOOLEAN", {"default": False}),
                 "execution_evidence": (ASR_EXECUTION_EVIDENCE_TYPE,),
@@ -874,7 +929,7 @@ class HydraTranscriptReceipt:
         model_id,
         aligner_id,
         audio=None,
-        processing_mode="qwen3_asr_native_chunk_merge",
+        processing_mode="qwen3_asr_plus_forced_aligner_chunk_merge",
         max_chunk_seconds=180,
         strict_alignment=False,
         execution_evidence=None,
@@ -891,6 +946,16 @@ class HydraTranscriptReceipt:
         if audio is not None:
             waveform, sample_rate = _audio_tuple(audio)
             source_duration_seconds = len(waveform) / sample_rate
+        if segments:
+            if (
+                [entry[0] for entry in _normalized_characters(transcript)] !=
+                [entry[0] for entry in _normalized_characters("".join(item["text"] for item in segments))]
+            ):
+                raise ValueError("hydra_transcript_receipt_timestamp_text_not_exact")
+            if source_duration_seconds is not None:
+                tolerance = max(1e-6, 1.0 / max(1, int(sample_rate)))
+                if segments[-1]["end_seconds"] > source_duration_seconds + tolerance:
+                    raise ValueError("hydra_transcript_receipt_timestamp_out_of_bounds")
         chunk_limit = max(30, min(1200, int(max_chunk_seconds)))
         execution_details = None
         if _text(processing_metadata):
@@ -927,22 +992,65 @@ class HydraTranscriptReceipt:
             normalized_mode = _text(processing_mode).lower()
             expected_operation = (
                 "forced_alignment"
-                if bool(strict_alignment) or "forced_align" in normalized_mode
+                if bool(strict_alignment) or normalized_mode.startswith("qwen3_forced_alignment")
                 else "transcribe"
             )
             if _text(verified_evidence.get("operation")) != expected_operation:
                 raise ValueError("hydra_transcript_receipt_execution_operation_mismatch")
             expected_mode = (
-                "qwen3_forced_alignment_anchor_chunk_merge"
+                "qwen3_forced_alignment_exact_anchor_chunk_merge"
                 if expected_operation == "forced_alignment"
-                else "qwen3_asr_native_chunk_merge"
+                else "qwen3_asr_plus_forced_aligner_chunk_merge"
             )
-            if normalized_mode != expected_mode:
+            compatible_modes = {
+                "forced_alignment": {
+                    "qwen3_forced_alignment_exact_anchor_chunk_merge",
+                    "qwen3_forced_alignment_anchor_chunk_merge",
+                },
+                "transcribe": {
+                    "qwen3_asr_plus_forced_aligner_chunk_merge",
+                    "qwen3_asr_native_chunk_merge",
+                },
+            }
+            if normalized_mode not in compatible_modes[expected_operation]:
                 raise ValueError("hydra_transcript_receipt_processing_mode_mismatch")
             if bool(strict_alignment) != (expected_operation == "forced_alignment"):
                 raise ValueError("hydra_transcript_receipt_strict_alignment_mismatch")
             if not isinstance(execution_details, dict):
                 raise ValueError("hydra_transcript_receipt_execution_metadata_required")
+            if not segments:
+                raise ValueError("hydra_transcript_receipt_precise_timestamps_required")
+            expected_provenance = "qwen3_forced_aligner_native"
+            if (
+                _text(execution_details.get("timestamp_provenance")) != expected_provenance
+                or execution_details.get("estimated_timestamps") is not False
+                or _text(execution_details.get("timestamp_transform")) != "offset_only"
+                or _text(execution_details.get("upstream_timestamp_repair_policy"))
+                != "reject_non_monotonic_raw_tokens"
+            ):
+                raise ValueError("hydra_transcript_receipt_exact_timestamp_evidence_required")
+            if (
+                _text(verified_evidence.get("timestamp_provenance")) != expected_provenance
+                or verified_evidence.get("estimated_timestamps") is not False
+                or _text(verified_evidence.get("timestamp_transform")) != "offset_only"
+                or _text(verified_evidence.get("upstream_timestamp_repair_policy"))
+                != "reject_non_monotonic_raw_tokens"
+            ):
+                raise ValueError("hydra_transcript_receipt_exact_execution_evidence_required")
+            for chunk in execution_details.get("chunks") or []:
+                if (
+                    not isinstance(chunk, dict)
+                    or _text(chunk.get("timestamp_transform")) != "offset_only"
+                    or chunk.get("estimated_timestamps") is not False
+                    or "timestamp_scale" in chunk
+                ):
+                    raise ValueError("hydra_transcript_receipt_exact_chunk_evidence_required")
+            if (
+                expected_operation == "forced_alignment"
+                and execution_details.get("automatic_chunking") is True
+                and _text(execution_details.get("anchor_text_match")) != "exact_normalized"
+            ):
+                raise ValueError("hydra_transcript_receipt_exact_anchor_evidence_required")
             metadata_hash = hashlib.sha256(
                 json.dumps(execution_details, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
             ).hexdigest()
@@ -954,6 +1062,16 @@ class HydraTranscriptReceipt:
             and verified_profile.get("quality_admission") == "production"
             and _text(verified_evidence.get("model_id")) == "Qwen/Qwen3-ASR-1.7B"
             and _text(verified_evidence.get("aligner_id")) == "Qwen/Qwen3-ForcedAligner-0.6B"
+            and bool(segments)
+            and verified_evidence.get("estimated_timestamps") is False
+            and _text(verified_evidence.get("timestamp_transform")) == "offset_only"
+            and _text(verified_evidence.get("upstream_timestamp_repair_policy"))
+            == "reject_non_monotonic_raw_tokens"
+        )
+        canonical_mode = (
+            "qwen3_forced_alignment_exact_anchor_chunk_merge"
+            if bool(strict_alignment)
+            else "qwen3_asr_plus_forced_aligner_chunk_merge"
         )
         payload = {
             "contract_version": "hydra_comfyui_qwen3_asr_transcript_receipt.v1",
@@ -971,13 +1089,32 @@ class HydraTranscriptReceipt:
             "segments": segments,
             "inference_profile": verified_profile,
             "long_audio_processing": {
-                "processing_mode": _text(processing_mode) or "qwen3_asr_native_chunk_merge",
+                "processing_mode": canonical_mode,
+                "requested_processing_mode": _text(processing_mode) or canonical_mode,
                 "source_duration_seconds": round(source_duration_seconds, 6) if source_duration_seconds is not None else None,
                 "max_chunk_seconds": chunk_limit,
-                "automatic_chunking": source_duration_seconds is not None and source_duration_seconds > chunk_limit,
+                "automatic_chunking": (
+                    execution_details.get("automatic_chunking")
+                    if isinstance(execution_details, dict)
+                    else source_duration_seconds is not None and source_duration_seconds > chunk_limit
+                ),
                 "chunk_merge": True,
-                "timestamp_offsets_preserved": True,
-                "timeline_monotonic": True,
+                "timestamp_provenance": (
+                    execution_details.get("timestamp_provenance") if isinstance(execution_details, dict) else None
+                ),
+                "estimated_timestamps": (
+                    execution_details.get("estimated_timestamps") if isinstance(execution_details, dict) else None
+                ),
+                "timestamp_transform": (
+                    execution_details.get("timestamp_transform") if isinstance(execution_details, dict) else None
+                ),
+                "upstream_timestamp_repair_policy": (
+                    execution_details.get("upstream_timestamp_repair_policy")
+                    if isinstance(execution_details, dict)
+                    else None
+                ),
+                "timestamp_offsets_preserved": production_verified,
+                "timeline_monotonic": bool(segments),
                 "strict_locked_script_alignment": bool(strict_alignment),
                 "last_timestamp_seconds": segments[-1]["end_seconds"] if segments else None,
                 "execution_details": execution_details,

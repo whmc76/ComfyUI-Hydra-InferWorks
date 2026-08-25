@@ -55,7 +55,7 @@
         "1",
         0
       ],
-      "processing_mode": "qwen3_asr_native_chunk_merge",
+      "processing_mode": "qwen3_asr_plus_forced_aligner_chunk_merge",
       "max_chunk_seconds": 90,
       "strict_alignment": false,
       "execution_evidence": [

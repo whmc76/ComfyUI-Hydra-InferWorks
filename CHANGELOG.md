@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.2.1 - 2026-08-26
+
+- Make Qwen3 ForcedAligner native units the only production ASR timing authority.
+- Reject non-monotonic raw timestamp tokens before upstream nearest-neighbor or linear-interpolation
+  repair can run.
+- Remove fuzzy anchor mapping, character-ratio projection, timestamp scaling, clamping, and averaged
+  chunk boundaries from the alignment path; exact normalized text coverage is now mandatory.
+- Bind receipts to native timestamp provenance, offset-only chunk merging, and the strict upstream
+  repair policy. Missing or estimated timing evidence cannot receive `completed` status.
+- Raise the direct forced-alignment window to the upstream-supported five-minute limit so shorter
+  inputs do not require needless anchor chunking.
+
 ## 1.2.0 - 2026-08-26
 
 - Make Hydra InferWorks installable in any ComfyUI project without a HydraMatrix runtime.
