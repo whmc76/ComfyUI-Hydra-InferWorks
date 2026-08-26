@@ -497,6 +497,10 @@ def _execution_evidence(
         "interpolation_used": execution_metadata.get("interpolation_used"),
         "scale_used": execution_metadata.get("scale_used"),
         "averaging_used": execution_metadata.get("averaging_used"),
+        "raw_argmax_sha256": _text(execution_metadata.get("raw_argmax_sha256")) or None,
+        "constrained_token_sha256": _text(
+            execution_metadata.get("constrained_token_sha256")
+        ) or None,
     })
 
 
@@ -631,6 +635,9 @@ def _decode_monotonic_timestamp_logits(
     logits_sha256 = hashlib.sha256(
         logits.numpy().astype("<f4", copy=False).tobytes(order="C")
     ).hexdigest()
+    raw_argmax_sha256 = hashlib.sha256(
+        json.dumps(raw_greedy, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
     selected_sha256 = hashlib.sha256(
         json.dumps(selected, separators=(",", ":")).encode("utf-8")
     ).hexdigest()
@@ -651,11 +658,13 @@ def _decode_monotonic_timestamp_logits(
             "audio_duration_bounded": True,
         },
         "raw_greedy_bins": raw_greedy,
+        "raw_argmax_sha256": raw_argmax_sha256,
         "raw_constraints_satisfied": raw_constraints["satisfied"],
         "raw_violation_count": raw_constraints["violation_count"],
         "raw_max_backward_bins": raw_constraints["max_backward_bins"],
         "selected_bins": selected,
         "selected_bins_sha256": selected_sha256,
+        "constrained_token_sha256": selected_sha256,
         "selected_constraints_satisfied": selected_constraints["satisfied"],
         "changed_position_count": sum(
             int(raw_value != selected_value)
@@ -827,6 +836,12 @@ def _align_with_monotonic_timestamp_logits(aligner, audio, text, language):
         "timestamp_token_id": contract["timestamp_token_id"],
         "normalized_audio_sample_rate": normalized_sample_rate,
         "normalized_audio_sample_count": int(normalized_audio.size),
+        "normalized_audio_content_sha256": _audio_content_sha256(
+            normalized_audio,
+            normalized_sample_rate,
+        ),
+        "text_sha256": hashlib.sha256(str(text or "").encode("utf-8")).hexdigest(),
+        "language_sha256": hashlib.sha256(_text(language).encode("utf-8")).hexdigest(),
         "word_units_sha256": hashlib.sha256(
             json.dumps(word_list, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
         ).hexdigest(),
@@ -890,6 +905,9 @@ def _constrained_decode_evidence_valid(value):
     expected_selected_sha256 = hashlib.sha256(
         json.dumps(selected_bins, separators=(",", ":")).encode("utf-8")
     ).hexdigest()
+    expected_raw_sha256 = hashlib.sha256(
+        json.dumps(raw_bins, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
     changed_count = sum(
         int(raw_value != selected_value)
         for raw_value, selected_value in zip(raw_bins, selected_bins)
@@ -901,9 +919,14 @@ def _constrained_decode_evidence_valid(value):
         or value.get("raw_violation_count") != raw_summary["violation_count"]
         or value.get("raw_max_backward_bins") != raw_summary["max_backward_bins"]
         or value.get("changed_position_count") != changed_count
+        or _text(value.get("raw_argmax_sha256")).lower() != expected_raw_sha256
         or _text(value.get("selected_bins_sha256")).lower() != expected_selected_sha256
+        or _text(value.get("constrained_token_sha256")).lower() != expected_selected_sha256
         or not re.fullmatch(r"[a-f0-9]{64}", _text(value.get("masked_logits_fp32_sha256")).lower())
         or not re.fullmatch(r"[a-f0-9]{64}", _text(value.get("word_units_sha256")).lower())
+        or not re.fullmatch(r"[a-f0-9]{64}", _text(value.get("normalized_audio_content_sha256")).lower())
+        or not re.fullmatch(r"[a-f0-9]{64}", _text(value.get("text_sha256")).lower())
+        or not re.fullmatch(r"[a-f0-9]{64}", _text(value.get("language_sha256")).lower())
         or value.get("masked_logits_shape") != [slot_count, class_count]
         or value.get("deterministic_tie_break") != "earliest_bin"
         or value.get("feasible") is not True
@@ -921,6 +944,22 @@ def _constrained_decode_evidence_valid(value):
     ):
         return False
     return True
+
+
+def _aggregate_constrained_decode_hash(chunks, field):
+    if any(
+        not isinstance(chunk, dict) or not isinstance(chunk.get("timestamp_decode"), dict)
+        for chunk in chunks
+    ):
+        raise ValueError("hydra_qwen3_forced_align_constrained_decode_hash_missing")
+    values = [_text(chunk["timestamp_decode"].get(field)).lower() for chunk in chunks]
+    if not values or any(not re.fullmatch(r"[a-f0-9]{64}", value) for value in values):
+        raise ValueError("hydra_qwen3_forced_align_constrained_decode_hash_missing")
+    if len(values) == 1:
+        return values[0]
+    return hashlib.sha256(
+        json.dumps(values, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
 
 
 def _anchor_groups(segments, max_chunk_seconds):
@@ -1287,6 +1326,14 @@ class HydraQwen3ForcedAlign:
             "interpolation_used": False,
             "scale_used": False,
             "averaging_used": False,
+            "raw_argmax_sha256": _aggregate_constrained_decode_hash(
+                alignment_chunk_receipts,
+                "raw_argmax_sha256",
+            ),
+            "constrained_token_sha256": _aggregate_constrained_decode_hash(
+                alignment_chunk_receipts,
+                "constrained_token_sha256",
+            ),
             "chunks": alignment_chunk_receipts,
         }
         evidence = _execution_evidence(
@@ -1487,11 +1534,43 @@ class HydraTranscriptReceipt:
                     "scale_used": False,
                     "averaging_used": False,
                 }
+                if not chunks:
+                    raise ValueError("hydra_transcript_receipt_constrained_decode_evidence_required")
+                try:
+                    raw_argmax_sha256 = _aggregate_constrained_decode_hash(
+                        chunks,
+                        "raw_argmax_sha256",
+                    )
+                    constrained_token_sha256 = _aggregate_constrained_decode_hash(
+                        chunks,
+                        "constrained_token_sha256",
+                    )
+                except ValueError as error:
+                    raise ValueError(
+                        "hydra_transcript_receipt_constrained_decode_evidence_required"
+                    ) from error
+                expected_language_sha256 = hashlib.sha256(
+                    _text(language).encode("utf-8")
+                ).hexdigest()
                 if (
-                    not chunks
-                    or any(execution_details.get(field) != expected for field, expected in exact_decode_fields.items())
+                    any(execution_details.get(field) != expected for field, expected in exact_decode_fields.items())
                     or any(verified_evidence.get(field) != expected for field, expected in exact_decode_fields.items())
                     or any(not _constrained_decode_evidence_valid(chunk.get("timestamp_decode")) for chunk in chunks)
+                    or any(
+                        _text(chunk.get("locked_text_sha256")).lower()
+                        != _text(chunk["timestamp_decode"].get("text_sha256")).lower()
+                        or _text(chunk["timestamp_decode"].get("language_sha256")).lower()
+                        != expected_language_sha256
+                        for chunk in chunks
+                    )
+                    or _text(execution_details.get("raw_argmax_sha256")).lower()
+                    != raw_argmax_sha256
+                    or _text(verified_evidence.get("raw_argmax_sha256")).lower()
+                    != raw_argmax_sha256
+                    or _text(execution_details.get("constrained_token_sha256")).lower()
+                    != constrained_token_sha256
+                    or _text(verified_evidence.get("constrained_token_sha256")).lower()
+                    != constrained_token_sha256
                 ):
                     raise ValueError("hydra_transcript_receipt_constrained_decode_evidence_required")
             if (

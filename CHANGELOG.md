@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.2.3 - 2026-08-26
+
+- Preserve the complete v1.2.2 native-bin constrained-decode evidence contract while binding every
+  alignment chunk to its normalized audio content, exact locked text, and language hashes.
+- Add reproducible raw-argmax and constrained-token path hashes to every chunk and aggregate them
+  across multi-chunk alignments into the typed execution evidence.
+- Fail closed when chunk bindings, path hashes, or aggregate hashes drift; native 80 ms bins,
+  offset-only timeline merging, and the explicit no-repair policy remain unchanged.
+
 ## 1.2.2 - 2026-08-26
 
 - Decode Qwen3 ForcedAligner timestamp logits with a deterministic global maximum-logit monotonic

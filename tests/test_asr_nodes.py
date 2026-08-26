@@ -1,3 +1,5 @@
+import hashlib
+import json
 import sys
 import tempfile
 import unittest
@@ -142,8 +144,13 @@ class HydraAudioNodeTests(unittest.TestCase):
 
         self.assertEqual(bins, [0, 2, 2, 4])
         self.assertEqual(evidence["raw_greedy_bins"], [0, 3, 2, 4])
+        self.assertEqual(
+            evidence["raw_argmax_sha256"],
+            hashlib.sha256(b"[0,3,2,4]").hexdigest(),
+        )
         self.assertFalse(evidence["raw_constraints_satisfied"])
         self.assertTrue(evidence["selected_constraints_satisfied"])
+        self.assertEqual(evidence["constrained_token_sha256"], evidence["selected_bins_sha256"])
         self.assertEqual(evidence["changed_position_count"], 1)
         self.assertFalse(evidence["lis_used"])
         self.assertFalse(evidence["interpolation_used"])
@@ -283,7 +290,39 @@ class HydraAudioNodeTests(unittest.TestCase):
             chunk["timestamp_decode"]["selected_constraints_satisfied"]
             for chunk in metadata["chunks"]
         ))
-        self.assertEqual(evidence.to_payload()["operation"], "forced_alignment")
+        raw_hashes = [
+            chunk["timestamp_decode"]["raw_argmax_sha256"]
+            for chunk in metadata["chunks"]
+        ]
+        constrained_hashes = [
+            chunk["timestamp_decode"]["constrained_token_sha256"]
+            for chunk in metadata["chunks"]
+        ]
+        expected_raw_aggregate = hashlib.sha256(
+            json.dumps(raw_hashes, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+        expected_constrained_aggregate = hashlib.sha256(
+            json.dumps(constrained_hashes, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+        self.assertEqual(metadata["raw_argmax_sha256"], expected_raw_aggregate)
+        self.assertEqual(metadata["constrained_token_sha256"], expected_constrained_aggregate)
+        evidence_payload = evidence.to_payload()
+        self.assertEqual(evidence_payload["operation"], "forced_alignment")
+        self.assertEqual(evidence_payload["raw_argmax_sha256"], expected_raw_aggregate)
+        self.assertEqual(evidence_payload["constrained_token_sha256"], expected_constrained_aggregate)
+        expected_language_sha256 = hashlib.sha256(b"Chinese").hexdigest()
+        for chunk in metadata["chunks"]:
+            decode = chunk["timestamp_decode"]
+            self.assertEqual(decode["text_sha256"], chunk["locked_text_sha256"])
+            self.assertEqual(decode["language_sha256"], expected_language_sha256)
+            self.assertRegex(decode["normalized_audio_content_sha256"], r"^[a-f0-9]{64}$")
+            self.assertEqual(
+                decode["raw_argmax_sha256"],
+                hashlib.sha256(
+                    json.dumps(decode["raw_greedy_bins"], separators=(",", ":")).encode("utf-8")
+                ).hexdigest(),
+            )
+            self.assertEqual(decode["constrained_token_sha256"], decode["selected_bins_sha256"])
 
     def test_long_locked_script_alignment_rejects_non_exact_anchor_mapping_even_with_legacy_tolerance(self):
         audio = {
@@ -319,6 +358,19 @@ class HydraAudioNodeTests(unittest.TestCase):
         self.assertFalse(decode["raw_constraints_satisfied"])
         self.assertTrue(decode["selected_constraints_satisfied"])
         self.assertFalse(decode["scale_used"])
+        self.assertTrue(_MODULE._constrained_decode_evidence_valid(decode))
+        for field in ("raw_argmax_sha256", "constrained_token_sha256"):
+            tampered = dict(decode)
+            tampered[field] = "0" * 64
+            self.assertFalse(_MODULE._constrained_decode_evidence_valid(tampered), field)
+        for field in (
+            "normalized_audio_content_sha256",
+            "text_sha256",
+            "language_sha256",
+        ):
+            tampered = dict(decode)
+            tampered[field] = "invalid"
+            self.assertFalse(_MODULE._constrained_decode_evidence_valid(tampered), field)
 
     def test_upstream_non_monotonic_timestamp_tokens_fail_instead_of_provider_repair(self):
         model = SimpleNamespace(forced_aligner=_Aligner())
@@ -419,7 +471,54 @@ class HydraAudioNodeTests(unittest.TestCase):
         self.assertEqual(timing["timestamp_transform"], "offset_only")
         self.assertFalse(timing["execution_details"]["interpolation_used"])
         self.assertFalse(timing["execution_details"]["lis_used"])
+        chunk_decode = timing["execution_details"]["chunks"][0]["timestamp_decode"]
+        self.assertEqual(
+            timing["execution_details"]["raw_argmax_sha256"],
+            chunk_decode["raw_argmax_sha256"],
+        )
+        self.assertEqual(
+            timing["execution_details"]["constrained_token_sha256"],
+            chunk_decode["constrained_token_sha256"],
+        )
+        self.assertEqual(
+            timing["execution_evidence"]["raw_argmax_sha256"],
+            chunk_decode["raw_argmax_sha256"],
+        )
+        self.assertEqual(
+            timing["execution_evidence"]["constrained_token_sha256"],
+            chunk_decode["constrained_token_sha256"],
+        )
         self.assertTrue(timing["timestamp_offsets_preserved"])
+
+        for field, target in (
+            ("raw_argmax_sha256", "execution"),
+            ("text_sha256", "chunk"),
+            ("language_sha256", "chunk"),
+        ):
+            with self.subTest(field=field):
+                tampered_metadata = json.loads(metadata)
+                if target == "execution":
+                    tampered_metadata[field] = "0" * 64
+                else:
+                    tampered_metadata["chunks"][0]["timestamp_decode"][field] = "0" * 64
+                with self.assertRaisesRegex(
+                    ValueError,
+                    "constrained_decode_evidence_required",
+                ):
+                    HydraTranscriptReceipt().write_receipt(
+                        text,
+                        language,
+                        timestamps,
+                        f"inferworks/test/tampered-{field}",
+                        "f" * 64,
+                        "Qwen/Qwen3-ASR-1.7B",
+                        "Qwen/Qwen3-ForcedAligner-0.6B",
+                        audio=audio,
+                        processing_mode="qwen3_forced_alignment_exact_anchor_chunk_merge",
+                        strict_alignment=True,
+                        execution_evidence=evidence,
+                        processing_metadata=json.dumps(tampered_metadata, ensure_ascii=False),
+                    )
 
     def test_receipt_rejects_malformed_overlapping_out_of_bounds_or_text_mismatched_timestamps(self):
         audio = {"waveform": torch.zeros((1, 1, 16), dtype=torch.float32), "sample_rate": 16}
