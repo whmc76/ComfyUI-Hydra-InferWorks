@@ -2,6 +2,7 @@ import hashlib
 import importlib.metadata
 import importlib.util
 import json
+import math
 import os
 import re
 import sys
@@ -104,6 +105,16 @@ class HydraAsrExecutionEvidence:
 
 def _text(value):
     return str(value or "").strip()
+
+
+def _canonical_execution_details(value):
+    if isinstance(value, dict):
+        return {key: _canonical_execution_details(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_canonical_execution_details(item) for item in value]
+    if isinstance(value, float) and math.isfinite(value) and value.is_integer():
+        return int(value)
+    return value
 
 
 def _resolve_asr_model_directory(value, default_relative_path):
@@ -1154,7 +1165,7 @@ class HydraQwen3LongAsrTranscribe:
         timestamp_text = "\n".join(lines)
         _synchronize_model_device(model)
         elapsed_ms = (time.perf_counter() - execution_started) * 1000
-        metadata = {
+        metadata = _canonical_execution_details({
             "contract_version": "hydra_qwen3_long_asr_execution.v1",
             "inference_profile": _model_inference_profile(model),
             "automatic_chunking": len(chunk_receipts) > 1,
@@ -1166,7 +1177,7 @@ class HydraQwen3LongAsrTranscribe:
             "timestamp_transform": "offset_only",
             "upstream_timestamp_repair_policy": "reject_non_monotonic_raw_tokens",
             "chunks": chunk_receipts,
-        }
+        })
         evidence = _execution_evidence(
             model,
             waveform,
@@ -1302,7 +1313,7 @@ class HydraQwen3ForcedAlign:
         timestamp_text = "\n".join(lines)
         _synchronize_model_device(model)
         elapsed_ms = (time.perf_counter() - execution_started) * 1000
-        metadata = {
+        metadata = _canonical_execution_details({
             "contract_version": "hydra_qwen3_forced_alignment_execution.v2",
             "inference_profile": _model_inference_profile(model),
             "automatic_chunking": len(plans) > 1,
@@ -1335,7 +1346,7 @@ class HydraQwen3ForcedAlign:
                 "constrained_token_sha256",
             ),
             "chunks": alignment_chunk_receipts,
-        }
+        })
         evidence = _execution_evidence(
             model,
             waveform,
