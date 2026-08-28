@@ -142,6 +142,22 @@ def _save_reference_video(reference_video: Input.Video, target: Path) -> None:
     )
 
 
+def _stage_bound_input(save, value, target: Path, *, resume: bool) -> None:
+    # A recovery never overwrites inputs already consumed by the provider.
+    temporary = target.with_name(f".{target.stem}.{uuid.uuid4().hex}{target.suffix}")
+    try:
+        save(value, temporary)
+        if target.exists():
+            if _sha256(target) != _sha256(temporary):
+                raise ValueError(f"hydra_heygem_existing_job_input_mismatch:{target.name}")
+        elif resume:
+            raise ValueError(f"hydra_heygem_resume_input_missing:{target.name}")
+        else:
+            temporary.replace(target)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
 def _download_result(url: str, target: Path, timeout_seconds: float) -> Path:
     target.parent.mkdir(parents=True, exist_ok=True)
     request = Request(url, method="GET", headers={"accept": "video/*,application/octet-stream"})
@@ -260,6 +276,8 @@ class HydraHeyGemLongformAvatar(io.ComfyNode):
                 io.Int.Input("generation_timeout_seconds", default=7200, min=10, max=86400, step=10),
                 io.Float.Input("poll_interval_seconds", default=3.0, min=0.1, max=60.0, step=0.1),
                 io.Int.Input("artifact_wait_seconds", default=60, min=1, max=600, step=1),
+                io.Boolean.Input("resume_existing_job", default=False, optional=True,
+                                 tooltip="Query the exact existing job and collect its result; never submit generation."),
             ],
             outputs=[
                 io.Video.Output(display_name="video"),
@@ -294,6 +312,7 @@ class HydraHeyGemLongformAvatar(io.ComfyNode):
         generation_timeout_seconds: int,
         poll_interval_seconds: float,
         artifact_wait_seconds: int,
+        resume_existing_job: bool = False,
     ) -> io.NodeOutput:
         endpoint = resolve_endpoint_config(
             service_url=service_url,
@@ -313,8 +332,16 @@ class HydraHeyGemLongformAvatar(io.ComfyNode):
         video_relative = PurePosixPath("inputs") / "video" / f"{job_code}.mp4"
         audio_host_path = shared_root.joinpath(*audio_relative.parts)
         video_host_path = shared_root.joinpath(*video_relative.parts)
-        _save_audio(audio, audio_host_path)
-        _save_reference_video(reference_video, video_host_path)
+        pending_path = shared_root / "receipts" / f"{job_code}.pending.json"
+        pending = json.loads(pending_path.read_text(encoding="utf-8")) if pending_path.is_file() else None
+        resume_existing_job = bool(resume_existing_job or pending)
+        _stage_bound_input(_save_audio, audio, audio_host_path, resume=resume_existing_job)
+        _stage_bound_input(_save_reference_video, reference_video, video_host_path, resume=resume_existing_job)
+        binding = {"job_code": job_code, "base_url": endpoint.base_url,
+                   "audio_sha256": _sha256(audio_host_path),
+                   "reference_video_sha256": _sha256(video_host_path)}
+        if pending and pending.get("binding") != binding:
+            raise ValueError("hydra_heygem_pending_job_binding_mismatch")
 
         if release_comfyui_models:
             comfy.model_management.unload_all_models()
@@ -347,12 +374,22 @@ class HydraHeyGemLongformAvatar(io.ComfyNode):
                 health_path=resolved_health_path,
                 timeout_seconds=ready_timeout_seconds,
             )
+            if not resume_existing_job:
+                _write_atomic_json({"contract_version": "hydra_heygem_accepted_job.v1",
+                                    "binding": binding, "status": "submission_started",
+                                    "started_at": datetime.now(timezone.utc).isoformat()}, pending_path)
             generation_receipt = client.generate(
                 code=job_code,
                 audio_container_path=_container_path(container_root, audio_relative),
                 video_container_path=_container_path(container_root, video_relative),
                 timeout_seconds=generation_timeout_seconds,
                 poll_interval_seconds=poll_interval_seconds,
+                resume_existing_job=resume_existing_job,
+                accepted_callback=lambda response: _write_atomic_json({
+                    "contract_version": "hydra_heygem_accepted_job.v1",
+                    "binding": binding, "submit_response": response,
+                    "accepted_at": datetime.now(timezone.utc).isoformat(),
+                }, pending_path),
                 extra_payload={
                     "watermark_switch": 0,
                     "digital_auth": 0,
@@ -380,8 +417,10 @@ class HydraHeyGemLongformAvatar(io.ComfyNode):
                 output_path = mapped_result
             output_path = _wait_for_artifact(output_path, artifact_wait_seconds)
         finally:
-            release_receipt = lifecycle.release(stop_after_job=stop_container_after)
-            if release_service_gpu_after:
+            # A lost query does not terminate the provider job. Do not stop it or
+            # release its models while it may still be generating.
+            release_receipt = lifecycle.release(stop_after_job=stop_container_after and generation_receipt is not None)
+            if release_service_gpu_after and generation_receipt is not None:
                 if client is None:
                     raise ValueError("hydra_heygem_service_gpu_release_client_missing")
                 service_gpu_release_receipt = client.release_gpu(
@@ -453,6 +492,10 @@ class HydraHeyGemLongformAvatar(io.ComfyNode):
                 "artifact_sha256": _sha256(output_path),
             },
             "provider": {
+                "submit_response": generation_receipt.submit_response,
+                "resumed_existing_job": generation_receipt.resumed_existing_job,
+                "provider_resubmitted": False,
+                "transient_query_failures": generation_receipt.transient_query_failures,
                 "poll_count": generation_receipt.poll_count,
                 "elapsed_seconds": generation_receipt.elapsed_seconds,
                 "result": generation_receipt.result,

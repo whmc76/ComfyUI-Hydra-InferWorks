@@ -104,6 +104,11 @@ evidence 会绑定原始 greedy bins、选中路径、logits/path SHA-256、约�
 
 它不包含 HeyGem 本体。部署方仍需准备 HeyGem 兼容的 submit/query 服务和共享挂载目录。
 
+状态查询的暂时断网、超时或 5xx 会在原生成窗口内继续查询同一任务，不重发生成。
+节点在共享 receipts 目录保存提交状态；恢复时校验原音频、视频哈希和服务绑定。
+`resume_existing_job=true` 可回收已知任务，严格只查询、不提交，且不会覆盖原输入。
+结果回执记录是否恢复、查询失败次数和真实 provider 响应；未确认完成时不停止服务或清理其模型。
+
 #### 独立项目配置
 
 InferWorks 不猜测 HeyGem 的地址。请在节点中填写完整 `service_url`，或者配置环境变量：

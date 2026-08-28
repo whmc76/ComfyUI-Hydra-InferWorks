@@ -15,6 +15,10 @@ class HeyGemClientError(RuntimeError):
     pass
 
 
+class HeyGemTransientQueryError(HeyGemClientError):
+    """Transport uncertainty is not a terminal provider generation result."""
+
+
 class JsonTransport(Protocol):
     def request_json(
         self,
@@ -47,9 +51,10 @@ class UrllibJsonTransport:
                 raw = response.read().decode("utf-8")
         except HTTPError as error:
             details = error.read().decode("utf-8", errors="replace")
-            raise HeyGemClientError(f"heygem_http_error:{error.code}:{details[:500]}") from error
+            error_type = HeyGemTransientQueryError if error.code in {408, 429} or error.code >= 500 else HeyGemClientError
+            raise error_type(f"heygem_http_error:{error.code}:{details[:500]}") from error
         except (URLError, TimeoutError, OSError) as error:
-            raise HeyGemClientError(f"heygem_request_failed:{error}") from error
+            raise HeyGemTransientQueryError(f"heygem_request_failed:{error}") from error
         try:
             decoded = json.loads(raw or "{}")
         except json.JSONDecodeError as error:
@@ -65,8 +70,10 @@ class HeyGemGenerationReceipt:
     result: str
     poll_count: int
     elapsed_seconds: float
-    submit_response: Mapping[str, object]
+    submit_response: Mapping[str, object] | None
     final_response: Mapping[str, object]
+    resumed_existing_job: bool = False
+    transient_query_failures: int = 0
 
 
 @dataclass(frozen=True)
@@ -189,6 +196,8 @@ class HeyGemClient:
         timeout_seconds: float,
         poll_interval_seconds: float,
         extra_payload: Mapping[str, object] | None = None,
+        resume_existing_job: bool = False,
+        accepted_callback: Callable[[Mapping[str, object]], None] | None = None,
     ) -> HeyGemGenerationReceipt:
         normalized_code = str(code or "").strip()
         if not normalized_code:
@@ -201,38 +210,52 @@ class HeyGemClient:
             "code": normalized_code,
             **dict(extra_payload or {}),
         }
-        submit_response = self.transport.request_json(
-            "POST",
-            _join_url(self.endpoint.base_url, self.submit_path),
-            payload=payload,
-            timeout_seconds=min(timeout_seconds, 120.0),
-        )
-        submit_code = _read_code(submit_response)
-        if submit_code != 10000:
-            message = submit_response.get("msg") or submit_response.get("message") or "unknown"
-            raise HeyGemClientError(f"heygem_submit_rejected:{submit_code}:{message}")
+        submit_response = None
+        if not resume_existing_job:
+            # Never retry a POST after transport uncertainty. The caller must query
+            # this exact job code before deciding whether any new work is safe.
+            submit_response = self.transport.request_json(
+                "POST",
+                _join_url(self.endpoint.base_url, self.submit_path),
+                payload=payload,
+                timeout_seconds=min(timeout_seconds, 120.0),
+            )
+            submit_code = _read_code(submit_response)
+            if submit_code != 10000:
+                message = submit_response.get("msg") or submit_response.get("message") or "unknown"
+                raise HeyGemClientError(f"heygem_submit_rejected:{submit_code}:{message}")
+            if accepted_callback:
+                accepted_callback(submit_response)
 
         poll_count = 0
+        transient_query_failures = 0
         while True:
             if self.interrupt_check:
                 self.interrupt_check()
             elapsed = self.monotonic() - started_at
             if elapsed > timeout_seconds:
-                raise HeyGemClientError(f"heygem_generation_timeout:{normalized_code}")
+                raise HeyGemClientError(f"heygem_generation_timeout:{normalized_code}:resubmit_forbidden")
             poll_count += 1
             query_url = _join_url(self.endpoint.base_url, self.query_path)
             separator = "&" if "?" in query_url else "?"
-            query_response = self.transport.request_json(
-                "GET",
-                f"{query_url}{separator}code={quote(normalized_code, safe='')}",
-                payload=None,
-                timeout_seconds=min(max(timeout_seconds - elapsed, 0.1), 120.0),
-            )
+            try:
+                query_response = self.transport.request_json(
+                    "GET",
+                    f"{query_url}{separator}code={quote(normalized_code, safe='')}",
+                    payload=None,
+                    timeout_seconds=min(max(timeout_seconds - elapsed, 0.1), 120.0),
+                )
+            except HeyGemTransientQueryError:
+                transient_query_failures += 1
+                self.sleeper(max(float(poll_interval_seconds), 0.01))
+                continue
             query_code = _read_code(query_response)
             if query_code != 10000:
                 message = query_response.get("msg") or query_response.get("message") or "unknown"
                 raise HeyGemClientError(f"heygem_query_rejected:{query_code}:{message}")
             data = _read_data(query_response)
+            if str(data.get("code") or "") != normalized_code:
+                raise HeyGemClientError(f"heygem_query_job_identity_mismatch:{normalized_code}:resubmit_forbidden")
             if _is_success(data):
                 return HeyGemGenerationReceipt(
                     code=normalized_code,
@@ -241,6 +264,8 @@ class HeyGemClient:
                     elapsed_seconds=round(self.monotonic() - started_at, 3),
                     submit_response=submit_response,
                     final_response=query_response,
+                    resumed_existing_job=resume_existing_job,
+                    transient_query_failures=transient_query_failures,
                 )
             if _is_failure(data):
                 message = data.get("msg") or data.get("message") or data.get("status") or "unknown"
