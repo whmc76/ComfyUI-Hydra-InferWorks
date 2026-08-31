@@ -1244,6 +1244,7 @@ class HydraQwen3ForcedAlign:
         anchor_text_match = "not_required_single_chunk"
         if duration_seconds <= chunk_limit:
             plans = [(0.0, duration_seconds, transcript)]
+            chunk_context_seconds = 0.0
         else:
             anchors = _parse_timestamps(anchor_timestamps)
             if not _text(anchor_text) or not anchors:
@@ -1253,7 +1254,15 @@ class HydraQwen3ForcedAlign:
                 [entry[0] for entry in _normalized_characters("".join(item["text"] for item in anchors))]
             ):
                 raise ValueError("hydra_qwen3_forced_align_anchor_timestamp_text_not_exact")
-            groups = _anchor_groups(anchors, chunk_limit)
+            # Anchor timestamps identify words, not guaranteed acoustic cut
+            # points. Reserve bounded leading context so a sparse or late
+            # anchor cannot cut the beginning of the next spoken clause out of
+            # its forced-alignment slice.
+            chunk_context_seconds = min(12.0, max(2.0, chunk_limit * 0.1))
+            groups = _anchor_groups(
+                anchors,
+                max(1.0, chunk_limit - chunk_context_seconds),
+            )
             locked_slices = _locked_text_slices(transcript, groups)
             anchor_text_match = "exact_normalized"
             plans = [
@@ -1264,6 +1273,12 @@ class HydraQwen3ForcedAlign:
         alignment_chunk_receipts = []
         previous_global_end = 0.0
         for chunk_index, (start_seconds, end_seconds, chunk_text) in enumerate(plans, start=1):
+            anchor_start_seconds = start_seconds
+            if chunk_index > 1 and previous_global_end < start_seconds:
+                start_seconds = max(
+                    start_seconds - chunk_context_seconds,
+                    previous_global_end,
+                )
             if start_seconds < 0 or end_seconds <= start_seconds or end_seconds > duration_seconds:
                 raise ValueError("hydra_qwen3_forced_align_anchor_timestamp_out_of_bounds")
             start_sample = max(0, min(len(waveform), round(start_seconds * sample_rate)))
@@ -1302,6 +1317,11 @@ class HydraQwen3ForcedAlign:
                 "index": chunk_index,
                 "start_seconds": round(slice_start_seconds, 6),
                 "end_seconds": round(slice_end_seconds, 6),
+                "anchor_start_seconds": round(anchor_start_seconds, 6),
+                "leading_context_seconds": round(
+                    max(0.0, anchor_start_seconds - slice_start_seconds),
+                    6,
+                ),
                 "locked_text_sha256": hashlib.sha256(chunk_text.encode("utf-8")).hexdigest(),
                 "timestamp_transform": "offset_only",
                 "estimated_timestamps": False,
@@ -1325,6 +1345,8 @@ class HydraQwen3ForcedAlign:
                 else "single_chunk_direct_forced_alignment"
             ),
             "anchor_text_match": anchor_text_match,
+            "chunk_audio_context_policy": "bounded_previous_alignment_tail_overlap",
+            "maximum_chunk_context_seconds": chunk_context_seconds,
             "timestamp_provenance": "qwen3_forced_aligner_logits_monotonic_viterbi",
             "estimated_timestamps": False,
             "timestamp_transform": "offset_only",
