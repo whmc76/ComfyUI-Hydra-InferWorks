@@ -125,11 +125,9 @@ def _is_success(data: Mapping[str, object]) -> bool:
     status = str(data.get("status", "")).strip().lower()
     if status in {"2", "success", "succeeded", "complete", "completed"}:
         return bool(_read_result(data))
-    try:
-        progress = int(data.get("progress"))
-    except (TypeError, ValueError):
-        progress = 0
-    return progress >= 100 and bool(_read_result(data))
+    # Native running/100 may expose an intermediate AVI before audio/video mux.
+    # Only an explicit terminal status authorizes artifact completion and release.
+    return False
 
 
 def _is_failure(data: Mapping[str, object]) -> bool:
@@ -294,6 +292,32 @@ class HeyGemClient:
             data.get("cuda_empty_cache") is True
             and data.get("cuda_ipc_collect") is True
         )
+        if "worker_release" in data:
+            # Process exit releases that worker's CUDA context. A fork-based
+            # service keeps its HTTP parent CUDA-free for the next native job.
+            proof = data.get("worker_release")
+            workers = proof.get("workers") if isinstance(proof, dict) else None
+            cuda_cleanup_accepted = (
+                isinstance(proof, dict)
+                and proof.get("contract_version") == "hydra_heygem_worker_release.v1"
+                and proof.get("method") == "native_process_handles_lazy_reinitialization"
+                and proof.get("settled") is True
+                and isinstance(proof.get("job_code"), str) and bool(proof["job_code"])
+                and isinstance(proof.get("terminal_response_sha256"), str)
+                and len(proof["terminal_response_sha256"]) == 64
+                and all(c in "0123456789abcdef" for c in proof["terminal_response_sha256"])
+                and type(proof.get("service_pid")) is int and proof["service_pid"] > 0
+                and data.get("cuda_cleanup_scope") == "native_worker_process_exit"
+                and data.get("parent_cuda_initialized") is False
+                and type(data.get("cuda_allocated_bytes")) is int and data["cuda_allocated_bytes"] == 0
+                and isinstance(workers, list) and bool(workers)
+                and all(isinstance(worker, dict)
+                        and type(worker.get("pid")) is int and worker["pid"] > 0
+                        and type(worker.get("parent_pid")) is int and worker["parent_pid"] == proof["service_pid"]
+                        and worker.get("settled") is True
+                        and type(worker.get("exit_code")) is int for worker in workers)
+                and len({worker["pid"] for worker in workers}) == len(workers)
+            )
         accepted = (
             _read_code(response) == 10000
             and response.get("success") is True

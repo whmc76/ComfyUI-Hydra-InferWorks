@@ -85,6 +85,8 @@
     "caller_job_identity_correlates_prompt_receipt_and_artifact",
     "containerized_comfyui_releases_heygem_gpu_via_service_api_without_docker_control",
     "heygem_gpu_release_receipts_fail_closed_on_provider_cleanup_errors",
+    "heygem_gpu_worker_exit_receipts_bind_terminal_job_and_settled_process_owners",
+    "heygem_running_progress_is_distinct_from_native_terminal_completion",
     "receipts_bind_artifacts_to_sha256"
   ]
 }

@@ -100,7 +100,7 @@ evidence 会绑定原始 greedy bins、选中路径、logits/path SHA-256、约�
 - 调用方提供的安全 `job_code`；
 - 文件型结果、SHA-256、服务响应和生命周期回执；
 - 任务结束后可选停止精确容器，或通过 HeyGem 服务的 GPU release API 释放模型显存；
-- 当 ComfyUI 自身运行在容器中时，可使用外部 supervisor 管理 HeyGem，并通过 release API 回收显存，无需把 Docker socket 或 Docker CLI 暴露给插件容器；provider 返回非空清理错误时会失败关闭，provider 确认 CUDA 可用时还必须明确确认 cache 与 IPC 清理均成功。
+- 当 ComfyUI 自身运行在容器中时，可使用外部 supervisor 管理 HeyGem，并通过 release API 回收显存，无需把 Docker socket 或 Docker CLI 暴露给插件容器。清理错误仍失败关闭；既有 cache/IPC 回执保持兼容，原生 worker 退出回执则须绑定终态任务和所有已结算 PID，并证明 HTTP 父进程保持 CUDA 未初始化，以便下次原生 fork。
 
 它不包含 HeyGem 本体。部署方仍需准备 HeyGem 兼容的 submit/query 服务和共享挂载目录。
 
@@ -166,6 +166,11 @@ imports are isolated so one missing optional dependency does not disable the rem
 Install the repository and Python requirements, run `install.py` for the private IndexTTS compatibility environment, then download the official IndexTTS 2.5 weights only after accepting `UPSTREAM_MODEL_LICENSE.txt`. Hydra InferWorks owns the Qwen3-ASR loader and pins the official `qwen-asr` package; HeyGem still requires an existing compatible service.
 
 Production profiles prefer BF16 and explicit optimized attention/compilation backends. Requested acceleration fails closed when unavailable. TTS generation reports the executed runtime profile, while production ASR receipts require typed execution evidence and exact official model-file attestations instead of trusting caller-provided metadata. Forced alignment reads Qwen timestamp logits directly and selects the globally maximum-logit monotonic path over native 80 ms classes. Every boundary remains a model class; upstream repair, LIS, interpolation, averaging, fuzzy projection, scaling, and clamping are forbidden, while chunk merging may add only the observed audio-slice offset. Receipts bind raw greedy bins, selected bins, logits/path digests, constraints, and explicit no-repair flags. INT8/INT4 remains outside production admission until model-specific timestamp-quality evidence exists. HeyGem GPU release receipts reject non-empty provider cleanup errors and, when CUDA is available, require explicit success for both cache and IPC cleanup.
+
+The cache/IPC rule above describes legacy cleanup responses. Native worker-exit responses use
+`hydra_heygem_worker_release.v1`: the terminal job, response digest, parent identity and every
+worker exit must be explicit, while the HTTP parent remains CUDA-uninitialized for native fork.
+`running/100` with an intermediate artifact remains active until the service reports terminal success.
 
 HeyGem has no implicit endpoint, port, container name, shared mount, or GPU cleanup route. Configure
 those values in the node or with canonical `INFERWORKS_HEYGEM_*` / upstream `HEYGEM_*`
