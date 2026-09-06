@@ -1098,7 +1098,10 @@ class HydraQwen3LongAsrTranscribe:
         silence_search_seconds=8,
     ):
         waveform, sample_rate = _audio_tuple(audio)
+        aligner = getattr(model, "forced_aligner", None)
         if return_timestamps:
+            if aligner is None:
+                raise ValueError("hydra_qwen3_long_asr_aligner_required")
             _install_strict_timestamp_guard(model)
         _synchronize_model_device(model)
         execution_started = time.perf_counter()
@@ -1124,19 +1127,28 @@ class HydraQwen3LongAsrTranscribe:
                 audio=(waveform[start_sample:end_sample], sample_rate),
                 language=model_language,
                 context=_text(context) or None,
-                return_time_stamps=bool(return_timestamps),
+                # Decode timestamps through the same native-logit path as locked alignment.
+                return_time_stamps=False,
             )
             if not results or len(results) != 1 or not _text(getattr(results[0], "text", "")):
                 raise ValueError(f"hydra_qwen3_long_asr_chunk_result_missing:{index + 1}")
             result = results[0]
             chunk_text = _text(result.text)
             texts.append(chunk_text)
+            chunk_language = model_language or _text(getattr(result, "language", ""))
             if not resolved_language:
-                resolved_language = _text(getattr(result, "language", ""))
-            time_stamps = getattr(result, "time_stamps", None) or []
+                resolved_language = chunk_language
+            time_stamps = []
+            timestamp_decode = None
             if return_timestamps:
-                if not time_stamps:
-                    raise ValueError(f"hydra_qwen3_long_asr_chunk_timestamps_missing:{index + 1}")
+                if not chunk_language or chunk_language.lower() == "auto":
+                    raise ValueError(f"hydra_qwen3_long_asr_chunk_language_missing:{index + 1}")
+                time_stamps, timestamp_decode = _align_with_monotonic_timestamp_logits(
+                    aligner,
+                    (waveform[start_sample:end_sample], sample_rate),
+                    chunk_text,
+                    chunk_language,
+                )
                 native_items = _validated_native_items(
                     time_stamps,
                     (end_sample - start_sample) / sample_rate,
@@ -1157,25 +1169,39 @@ class HydraQwen3LongAsrTranscribe:
                 "start_seconds": round(start_seconds, 6),
                 "end_seconds": round(end_seconds, 6),
                 "text_sha256": hashlib.sha256(chunk_text.encode("utf-8")).hexdigest(),
+                "language_sha256": hashlib.sha256(chunk_language.encode("utf-8")).hexdigest(),
                 "timestamp_count": len(time_stamps),
                 "timestamp_transform": "offset_only",
                 "estimated_timestamps": False,
+                "timestamp_decode": timestamp_decode,
             })
         transcript = "".join(texts)
         timestamp_text = "\n".join(lines)
         _synchronize_model_device(model)
         elapsed_ms = (time.perf_counter() - execution_started) * 1000
         metadata = _canonical_execution_details({
-            "contract_version": "hydra_qwen3_long_asr_execution.v1",
+            "contract_version": "hydra_qwen3_long_asr_execution.v2",
             "inference_profile": _model_inference_profile(model),
             "automatic_chunking": len(chunk_receipts) > 1,
             "actual_chunk_count": len(chunk_receipts),
             "max_chunk_seconds": chunk_limit,
             "split_strategy": "lowest_rms_before_hard_limit",
-            "timestamp_provenance": "qwen3_forced_aligner_native",
+            "timestamp_provenance": "qwen3_forced_aligner_logits_monotonic_viterbi" if return_timestamps else None,
             "estimated_timestamps": False,
             "timestamp_transform": "offset_only",
-            "upstream_timestamp_repair_policy": "reject_non_monotonic_raw_tokens",
+            "upstream_timestamp_repair_policy": "bypass_lis_constrained_decode" if return_timestamps else None,
+            **({
+                "timestamp_decode_contract": QWEN_ASR_CONSTRAINED_DECODE_CONTRACT,
+                "timestamp_decode_algorithm": QWEN_ASR_CONSTRAINED_DECODE_ALGORITHM,
+                "timestamp_segment_ms": QWEN_ASR_TIMESTAMP_SEGMENT_MS,
+                "repair_applied": False,
+                "lis_used": False,
+                "interpolation_used": False,
+                "scale_used": False,
+                "averaging_used": False,
+                "raw_argmax_sha256": _aggregate_constrained_decode_hash(chunk_receipts, "raw_argmax_sha256"),
+                "constrained_token_sha256": _aggregate_constrained_decode_hash(chunk_receipts, "constrained_token_sha256"),
+            } if return_timestamps else {}),
             "chunks": chunk_receipts,
         })
         evidence = _execution_evidence(
@@ -1520,17 +1546,8 @@ class HydraTranscriptReceipt:
                 raise ValueError("hydra_transcript_receipt_execution_metadata_required")
             if not segments:
                 raise ValueError("hydra_transcript_receipt_precise_timestamps_required")
-            constrained_forced_alignment = expected_operation == "forced_alignment"
-            expected_provenance = (
-                "qwen3_forced_aligner_logits_monotonic_viterbi"
-                if constrained_forced_alignment
-                else "qwen3_forced_aligner_native"
-            )
-            expected_repair_policy = (
-                "bypass_lis_constrained_decode"
-                if constrained_forced_alignment
-                else "reject_non_monotonic_raw_tokens"
-            )
+            expected_provenance = "qwen3_forced_aligner_logits_monotonic_viterbi"
+            expected_repair_policy = "bypass_lis_constrained_decode"
             if (
                 _text(execution_details.get("timestamp_provenance")) != expected_provenance
                 or execution_details.get("estimated_timestamps") is not False
@@ -1556,7 +1573,7 @@ class HydraTranscriptReceipt:
                     or "timestamp_scale" in chunk
                 ):
                     raise ValueError("hydra_transcript_receipt_exact_chunk_evidence_required")
-            if constrained_forced_alignment:
+            if expected_operation in {"transcribe", "forced_alignment"}:
                 exact_decode_fields = {
                     "timestamp_decode_contract": QWEN_ASR_CONSTRAINED_DECODE_CONTRACT,
                     "timestamp_decode_algorithm": QWEN_ASR_CONSTRAINED_DECODE_ALGORITHM,
@@ -1590,10 +1607,10 @@ class HydraTranscriptReceipt:
                     or any(verified_evidence.get(field) != expected for field, expected in exact_decode_fields.items())
                     or any(not _constrained_decode_evidence_valid(chunk.get("timestamp_decode")) for chunk in chunks)
                     or any(
-                        _text(chunk.get("locked_text_sha256")).lower()
+                        _text(chunk.get("locked_text_sha256" if expected_operation == "forced_alignment" else "text_sha256")).lower()
                         != _text(chunk["timestamp_decode"].get("text_sha256")).lower()
                         or _text(chunk["timestamp_decode"].get("language_sha256")).lower()
-                        != expected_language_sha256
+                        != (expected_language_sha256 if expected_operation == "forced_alignment" else _text(chunk.get("language_sha256")).lower())
                         for chunk in chunks
                     )
                     or _text(execution_details.get("raw_argmax_sha256")).lower()

@@ -74,6 +74,12 @@ ComfyUI 本地模型目录读取。它提供：
 - `HydraQwen3ForcedAlign`：使用 ASR 锚点分块对齐调用方锁定文本；
 - `HydraTranscriptReceipt`：把源音频哈希、模型身份、时间戳和分块证据写入不可变 JSON 回执。
 
+长音频转写先取得每块真实识别文本，再调用与锁定文本对齐相同的原生单调 logits 解码器。
+每块记录识别文本、实际语言及完整解码证据，回执对两条路径执行同样的真实性校验。
+2026-09-06 的 873.012 秒生产音频暴露出旧长音频路径仍启用上游内置时间戳，
+因倒序 token 触发 `hydra_qwen3_forced_align_upstream_timestamp_repair_forbidden`；
+此修复保留严格校验，消除该路径分叉。真实长音频复跑验收记录在 Hydra 生产发布回执中。
+
 生产时间线只接受 Qwen3 ForcedAligner 时间戳分类头中的原生 80ms 类别。插件不再调用上游
 `fix_timestamp` 或 `parse_timestamp`：它直接读取每个 timestamp slot 的 logits，在音频时长范围内
 求全局最大 logit 的单调离散路径，并要求每个字符/词至少占一个原生 bin、相邻单元不重叠。
