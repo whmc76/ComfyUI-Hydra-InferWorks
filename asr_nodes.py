@@ -988,6 +988,46 @@ def _anchor_groups(segments, max_chunk_seconds):
     return groups
 
 
+FORCED_ALIGN_CHUNK_CONTEXT_POLICY = "bounded_two_sided_context_with_lookahead_text"
+# A run of this many minimum-width timestamp slots means text was squeezed into too little audio.
+FORCED_ALIGN_COMPRESSED_RUN = 8
+
+
+def _lookahead_text(next_text, fraction):
+    """Prefix of the next slice covering about `fraction` of it, ending on a word boundary."""
+    characters = list(next_text)
+    normalized = _normalized_characters(next_text)
+    if not normalized:
+        return ""
+    count = max(1, min(len(normalized), int(np.ceil(len(normalized) * max(0.0, fraction)))))
+    end = normalized[count - 1][1] + 1
+    # Never split an ASCII word: the aligner tokenizes it as one item.
+    while end < len(characters) and characters[end].isascii() and characters[end].isalnum():
+        end += 1
+    return "".join(characters[:end])
+
+
+def _slice_items(items, character_count):
+    """Leading items covering exactly `character_count` normalized characters."""
+    kept, covered = [], 0
+    for item in items:
+        if covered == character_count:
+            break
+        covered += len(_normalized_characters(item[0]))
+        if covered > character_count:
+            raise ValueError("hydra_qwen3_forced_align_lookahead_boundary_inside_item")
+        kept.append(item)
+    if covered != character_count:
+        raise ValueError("hydra_qwen3_forced_align_native_text_not_exact")
+    return kept
+
+
+def _tail_compressed(items):
+    minimum = QWEN_ASR_TIMESTAMP_SEGMENT_MS / 1000 + 1e-6
+    tail = items[-FORCED_ALIGN_COMPRESSED_RUN:]
+    return len(tail) == FORCED_ALIGN_COMPRESSED_RUN and all(end - start <= minimum for _text_value, start, end in tail)
+
+
 def _locked_text_slices(locked_text, groups):
     anchor_texts = ["".join(segment["text"] for segment in group) for group in groups]
     anchor_normalized = _normalized_characters("".join(anchor_texts))
@@ -1123,6 +1163,19 @@ class HydraQwen3LongAsrTranscribe:
             end_sample = boundaries[index + 1]
             start_seconds = start_sample / sample_rate
             end_seconds = end_sample / sample_rate
+            if not np.any(waveform[start_sample:end_sample]):
+                # A digital-zero chunk has no speech to transcribe; record it instead of failing.
+                chunk_receipts.append({
+                    "index": index + 1,
+                    "start_seconds": round(start_seconds, 6),
+                    "end_seconds": round(end_seconds, 6),
+                    "silent": "silent_digital_zero",
+                    "text_sha256": hashlib.sha256(b"").hexdigest(),
+                    "timestamp_count": 0,
+                    "timestamp_transform": "offset_only",
+                    "estimated_timestamps": False,
+                })
+                continue
             results = model.transcribe(
                 audio=(waveform[start_sample:end_sample], sample_rate),
                 language=model_language,
@@ -1175,6 +1228,9 @@ class HydraQwen3LongAsrTranscribe:
                 "estimated_timestamps": False,
                 "timestamp_decode": timestamp_decode,
             })
+        spoken_chunks = [chunk for chunk in chunk_receipts if chunk.get("silent") != "silent_digital_zero"]
+        if not spoken_chunks:
+            raise ValueError("hydra_qwen3_long_asr_all_chunks_silent")
         transcript = "".join(texts)
         timestamp_text = "\n".join(lines)
         _synchronize_model_device(model)
@@ -1199,8 +1255,8 @@ class HydraQwen3LongAsrTranscribe:
                 "interpolation_used": False,
                 "scale_used": False,
                 "averaging_used": False,
-                "raw_argmax_sha256": _aggregate_constrained_decode_hash(chunk_receipts, "raw_argmax_sha256"),
-                "constrained_token_sha256": _aggregate_constrained_decode_hash(chunk_receipts, "constrained_token_sha256"),
+                "raw_argmax_sha256": _aggregate_constrained_decode_hash(spoken_chunks, "raw_argmax_sha256"),
+                "constrained_token_sha256": _aggregate_constrained_decode_hash(spoken_chunks, "constrained_token_sha256"),
             } if return_timestamps else {}),
             "chunks": chunk_receipts,
         })
@@ -1280,14 +1336,14 @@ class HydraQwen3ForcedAlign:
                 [entry[0] for entry in _normalized_characters("".join(item["text"] for item in anchors))]
             ):
                 raise ValueError("hydra_qwen3_forced_align_anchor_timestamp_text_not_exact")
-            # Anchor timestamps identify words, not guaranteed acoustic cut
-            # points. Reserve bounded leading context so a sparse or late
-            # anchor cannot cut the beginning of the next spoken clause out of
-            # its forced-alignment slice.
+            # Anchor timestamps are chunking hints, not acoustic cut points.
+            # Each slice gets bounded leading and trailing audio context, and
+            # the trailing context is explained by lookahead text so an early
+            # hint cannot squeeze the slice's last words into its tail.
             chunk_context_seconds = min(12.0, max(2.0, chunk_limit * 0.1))
             groups = _anchor_groups(
                 anchors,
-                max(1.0, chunk_limit - chunk_context_seconds),
+                max(1.0, chunk_limit - 2 * chunk_context_seconds),
             )
             locked_slices = _locked_text_slices(transcript, groups)
             anchor_text_match = "exact_normalized"
@@ -1300,10 +1356,19 @@ class HydraQwen3ForcedAlign:
         previous_global_end = 0.0
         for chunk_index, (start_seconds, end_seconds, chunk_text) in enumerate(plans, start=1):
             anchor_start_seconds = start_seconds
-            if chunk_index > 1 and previous_global_end < start_seconds:
-                start_seconds = max(
-                    start_seconds - chunk_context_seconds,
-                    previous_global_end,
+            anchor_end_seconds = end_seconds
+            start_source = "anchor_context"
+            if chunk_index > 1:
+                start_seconds = max(start_seconds - chunk_context_seconds, previous_global_end)
+                if previous_global_end > anchor_start_seconds:
+                    start_source = "previous_alignment_end"
+            lookahead_text = ""
+            if chunk_index < len(plans):
+                end_seconds = min(duration_seconds, end_seconds + chunk_context_seconds)
+                next_start, next_end, next_text = plans[chunk_index]
+                lookahead_text = _lookahead_text(
+                    next_text,
+                    chunk_context_seconds * 1.5 / max(1e-6, next_end - next_start),
                 )
             if start_seconds < 0 or end_seconds <= start_seconds or end_seconds > duration_seconds:
                 raise ValueError("hydra_qwen3_forced_align_anchor_timestamp_out_of_bounds")
@@ -1311,10 +1376,11 @@ class HydraQwen3ForcedAlign:
             end_sample = max(start_sample + 1, min(len(waveform), round(end_seconds * sample_rate)))
             slice_start_seconds = start_sample / sample_rate
             slice_end_seconds = end_sample / sample_rate
+            aligned_text = chunk_text + lookahead_text
             items, timestamp_decode = _align_with_monotonic_timestamp_logits(
                 aligner,
                 audio=(waveform[start_sample:end_sample], sample_rate),
-                text=chunk_text,
+                text=aligned_text,
                 language=resolved_language,
             )
             items = [item for item in items if _text(getattr(item, "text", ""))]
@@ -1328,10 +1394,13 @@ class HydraQwen3ForcedAlign:
                 "hydra_qwen3_forced_align",
             )
             if (
-                [entry[0] for entry in _normalized_characters(chunk_text)] !=
+                [entry[0] for entry in _normalized_characters(aligned_text)] !=
                 [entry[0] for entry in _normalized_characters("".join(item[0] for item in native_items))]
             ):
                 raise ValueError("hydra_qwen3_forced_align_native_text_not_exact")
+            native_items = _slice_items(native_items, len(_normalized_characters(chunk_text)))
+            if _tail_compressed(native_items):
+                raise ValueError(f"hydra_qwen3_forced_align_chunk_tail_compressed:{chunk_index}")
             for item_text, item_start, item_end in native_items:
                 global_start = slice_start_seconds + item_start
                 global_end = slice_start_seconds + item_end
@@ -1344,11 +1413,19 @@ class HydraQwen3ForcedAlign:
                 "start_seconds": round(slice_start_seconds, 6),
                 "end_seconds": round(slice_end_seconds, 6),
                 "anchor_start_seconds": round(anchor_start_seconds, 6),
+                "anchor_end_seconds": round(anchor_end_seconds, 6),
+                "start_source": start_source,
                 "leading_context_seconds": round(
                     max(0.0, anchor_start_seconds - slice_start_seconds),
                     6,
                 ),
+                "trailing_context_seconds": round(
+                    max(0.0, slice_end_seconds - anchor_end_seconds),
+                    6,
+                ),
                 "locked_text_sha256": hashlib.sha256(chunk_text.encode("utf-8")).hexdigest(),
+                "aligned_text_sha256": hashlib.sha256(aligned_text.encode("utf-8")).hexdigest(),
+                "lookahead_character_count": len(_normalized_characters(lookahead_text)),
                 "timestamp_transform": "offset_only",
                 "estimated_timestamps": False,
                 "aligned_item_count": len(native_items),
@@ -1371,7 +1448,7 @@ class HydraQwen3ForcedAlign:
                 else "single_chunk_direct_forced_alignment"
             ),
             "anchor_text_match": anchor_text_match,
-            "chunk_audio_context_policy": "bounded_previous_alignment_tail_overlap",
+            "chunk_audio_context_policy": FORCED_ALIGN_CHUNK_CONTEXT_POLICY,
             "maximum_chunk_context_seconds": chunk_context_seconds,
             "timestamp_provenance": "qwen3_forced_aligner_logits_monotonic_viterbi",
             "estimated_timestamps": False,
@@ -1573,6 +1650,18 @@ class HydraTranscriptReceipt:
                     or "timestamp_scale" in chunk
                 ):
                     raise ValueError("hydra_transcript_receipt_exact_chunk_evidence_required")
+            silent_text_sha256 = hashlib.sha256(b"").hexdigest()
+            if any(
+                chunk.get("silent") == "silent_digital_zero" and (
+                    expected_operation != "transcribe"
+                    or chunk.get("timestamp_count") != 0
+                    or _text(chunk.get("text_sha256")).lower() != silent_text_sha256
+                )
+                for chunk in chunks
+            ):
+                raise ValueError("hydra_transcript_receipt_silent_chunk_evidence_invalid")
+            # Digital-zero chunks carry no speech, so they have no decode evidence to verify.
+            chunks = [chunk for chunk in chunks if chunk.get("silent") != "silent_digital_zero"]
             if expected_operation in {"transcribe", "forced_alignment"}:
                 exact_decode_fields = {
                     "timestamp_decode_contract": QWEN_ASR_CONSTRAINED_DECODE_CONTRACT,
@@ -1607,7 +1696,10 @@ class HydraTranscriptReceipt:
                     or any(verified_evidence.get(field) != expected for field, expected in exact_decode_fields.items())
                     or any(not _constrained_decode_evidence_valid(chunk.get("timestamp_decode")) for chunk in chunks)
                     or any(
-                        _text(chunk.get("locked_text_sha256" if expected_operation == "forced_alignment" else "text_sha256")).lower()
+                        _text(
+                            (chunk.get("aligned_text_sha256") or chunk.get("locked_text_sha256"))
+                            if expected_operation == "forced_alignment" else chunk.get("text_sha256")
+                        ).lower()
                         != _text(chunk["timestamp_decode"].get("text_sha256")).lower()
                         or _text(chunk["timestamp_decode"].get("language_sha256")).lower()
                         != (expected_language_sha256 if expected_operation == "forced_alignment" else _text(chunk.get("language_sha256")).lower())

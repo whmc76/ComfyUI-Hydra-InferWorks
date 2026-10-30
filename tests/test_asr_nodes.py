@@ -104,6 +104,35 @@ class _Aligner:
         raise AssertionError("upstream align fallback must never execute")
 
 
+class _TimelineThinker(_Thinker):
+    """Emits the logit peaks of a known global per-character timeline for the current slice."""
+
+    def __call__(self, **inputs):
+        slot_count = inputs["input_ids"].shape[1]
+        logits = torch.full((1, slot_count, 5000), -100.0, dtype=torch.float32)
+        last_bin = int(self.aligner.normalized_sample_count / 16000 * 1000 // 80)
+        for index, word in enumerate(self.aligner.aligner_processor.encode_timestamp_result):
+            start, end = self.aligner.timeline[word]
+            start_bin = min(last_bin - 1, max(0, round((start - self.aligner.offset) / 0.08)))
+            end_bin = min(last_bin, max(start_bin + 1, round((end - self.aligner.offset) / 0.08)))
+            logits[0, index * 2, start_bin] = 10.0
+            logits[0, index * 2 + 1, end_bin] = 10.0
+        return SimpleNamespace(logits=logits)
+
+
+class _TimelineAligner(_Aligner):
+    def __init__(self, timeline):
+        super().__init__()
+        self.timeline = timeline
+        self.offset = 0.0
+        self.model.thinker = _TimelineThinker(self)
+
+    def _inferworks_normalize_audios(self, audio):
+        # The test waveform stores each sample's own time in seconds.
+        self.offset = float(audio[0][0])
+        return super()._inferworks_normalize_audios(audio)
+
+
 class _OverflowAligner(_Aligner):
     def __init__(self):
         super().__init__(raw_overflow=True)
@@ -313,7 +342,7 @@ class HydraAudioNodeTests(unittest.TestCase):
         expected_language_sha256 = hashlib.sha256(b"Chinese").hexdigest()
         for chunk in metadata["chunks"]:
             decode = chunk["timestamp_decode"]
-            self.assertEqual(decode["text_sha256"], chunk["locked_text_sha256"])
+            self.assertEqual(decode["text_sha256"], chunk["aligned_text_sha256"])
             self.assertEqual(decode["language_sha256"], expected_language_sha256)
             self.assertRegex(decode["normalized_audio_content_sha256"], r"^[a-f0-9]{64}$")
             self.assertEqual(
@@ -396,6 +425,93 @@ class HydraAudioNodeTests(unittest.TestCase):
                 max_chunk_seconds=150,
                 maximum_anchor_character_error_rate=0.2,
             )
+
+    def test_early_hint_slice_gets_trailing_context_and_lookahead_text(self):
+        # 200 s audio, hint says the first slice ends at 100 s; context = 12 s.
+        audio = {"waveform": torch.zeros((1, 1, 2000), dtype=torch.float32), "sample_rate": 10}
+        locked_text = "甲乙丙丁戊己庚辛"
+        _text, _language, timestamps, metadata_json, _evidence = HydraQwen3ForcedAlign().align(
+            SimpleNamespace(forced_aligner=_Aligner()),
+            audio,
+            locked_text,
+            "Chinese",
+            anchor_text=locked_text,
+            anchor_timestamps="0-100: 甲乙丙丁\n100-200: 戊己庚辛",
+            max_chunk_seconds=150,
+        )
+        metadata = json.loads(metadata_json)
+        first, second = metadata["chunks"]
+        self.assertEqual(metadata["chunk_audio_context_policy"], _MODULE.FORCED_ALIGN_CHUNK_CONTEXT_POLICY)
+        self.assertEqual(first["anchor_end_seconds"], 100.0)
+        self.assertEqual(first["end_seconds"], 112.0)
+        self.assertEqual(first["trailing_context_seconds"], 12.0)
+        self.assertGreater(first["lookahead_character_count"], 0)
+        self.assertNotEqual(first["aligned_text_sha256"], first["locked_text_sha256"])
+        self.assertEqual(first["timestamp_decode"]["text_sha256"], first["aligned_text_sha256"])
+        self.assertEqual(second["aligned_text_sha256"], second["locked_text_sha256"])
+        lines = timestamps.splitlines()
+        self.assertEqual("".join(line.split(": ", 1)[1] for line in lines), locked_text)
+
+    def test_early_hint_keeps_true_word_times_across_the_slice_boundary(self):
+        # 丁 is really spoken until 104 s although the hint ends the first slice at 100 s.
+        timeline = {
+            "甲": (0, 20), "乙": (20, 40), "丙": (40, 60), "丁": (60, 104),
+            "戊": (105, 130), "己": (130, 150), "庚": (150, 170), "辛": (170, 200),
+        }
+        audio = {"waveform": (torch.arange(2000, dtype=torch.float32) / 10).reshape(1, 1, 2000), "sample_rate": 10}
+        locked_text = "甲乙丙丁戊己庚辛"
+        _text, _language, timestamps, metadata_json, _evidence = HydraQwen3ForcedAlign().align(
+            SimpleNamespace(forced_aligner=_TimelineAligner(timeline)),
+            audio,
+            locked_text,
+            "Chinese",
+            anchor_text=locked_text,
+            anchor_timestamps="0-100: 甲乙丙丁\n100-200: 戊己庚辛",
+            max_chunk_seconds=150,
+        )
+        times = {
+            line.split(": ", 1)[1]: tuple(float(value) for value in line.split(": ", 1)[0].split("-"))
+            for line in timestamps.splitlines()
+        }
+        for word, (start, end) in timeline.items():
+            self.assertAlmostEqual(times[word][0], start, delta=0.5, msg=word)
+            self.assertAlmostEqual(times[word][1], end, delta=0.5, msg=word)
+        second = json.loads(metadata_json)["chunks"][1]
+        self.assertEqual(second["start_source"], "previous_alignment_end")
+        self.assertAlmostEqual(second["start_seconds"], 104.0, delta=0.1)
+
+    def test_alignment_helpers_split_on_item_boundaries_and_detect_compression(self):
+        self.assertEqual(_MODULE._lookahead_text("MOSS布局控制", 0.1), "MOSS")
+        self.assertEqual(_MODULE._lookahead_text("甲乙丙丁", 0.5), "甲乙")
+        items = [("MOSS", 0.0, 1.0), ("布", 1.0, 1.4), ("局", 1.4, 1.8)]
+        self.assertEqual(_MODULE._slice_items(items, 5), items[:2])
+        with self.assertRaisesRegex(ValueError, "lookahead_boundary_inside_item"):
+            _MODULE._slice_items(items, 2)
+        squeezed = [(str(i), 10 + i * 0.08, 10.08 + i * 0.08) for i in range(8)]
+        self.assertTrue(_MODULE._tail_compressed([("a", 0.0, 1.0)] + squeezed))
+        self.assertFalse(_MODULE._tail_compressed(squeezed[:7]))
+        self.assertFalse(_MODULE._tail_compressed([(str(i), i * 0.3, i * 0.3 + 0.25) for i in range(10)]))
+
+    def test_long_asr_records_digital_zero_chunk_instead_of_failing(self):
+        waveform = torch.cat([
+            torch.full((1000,), 1.0),
+            torch.zeros((1000,)),
+        ]).reshape(1, 1, 2000)
+        model = _AsrModel()
+        text, _language, _timestamps, metadata_json, _evidence = HydraQwen3LongAsrTranscribe().transcribe(
+            model,
+            {"waveform": waveform, "sample_rate": 10},
+            language="Chinese",
+            return_timestamps=False,
+            max_chunk_seconds=90,
+            silence_search_seconds=1,
+        )
+        metadata = json.loads(metadata_json)
+        self.assertEqual(model.calls, 2)
+        self.assertEqual(metadata["actual_chunk_count"], 3)
+        self.assertEqual(metadata["chunks"][-1]["silent"], "silent_digital_zero")
+        self.assertEqual(metadata["chunks"][-1]["timestamp_count"], 0)
+        self.assertEqual(text, "片段1片段2")
 
     def test_receipt_records_long_audio_chunk_merge_and_strict_alignment(self):
         audio = {

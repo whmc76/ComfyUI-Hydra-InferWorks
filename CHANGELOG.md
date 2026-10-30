@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+- Give every long forced-alignment slice bounded trailing audio context, explained by lookahead text
+  from the next slice, and keep only the slice's own words. An early chunking hint can no longer
+  squeeze a slice's last words into its tail; the next slice starts where those words actually end.
+- Fail closed (`chunk_tail_compressed`) when a slice ends in a run of minimum-width timestamp slots.
+- Record digital-zero long-ASR chunks as `silent_digital_zero` instead of failing the transcription.
+- Chunk receipts add `anchor_end_seconds`, `trailing_context_seconds`, `start_source`,
+  `aligned_text_sha256` and `lookahead_character_count`; the context policy is now
+  `bounded_two_sided_context_with_lookahead_text`.
+
 ## 1.2.3 - 2026-08-26
 
 - Preserve the complete v1.2.2 native-bin constrained-decode evidence contract while binding every
