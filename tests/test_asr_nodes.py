@@ -511,7 +511,50 @@ class HydraAudioNodeTests(unittest.TestCase):
         self.assertEqual(metadata["actual_chunk_count"], 3)
         self.assertEqual(metadata["chunks"][-1]["silent"], "silent_digital_zero")
         self.assertEqual(metadata["chunks"][-1]["timestamp_count"], 0)
+        silent = metadata["chunks"][-1]
+        self.assertEqual(silent["sample_rate"], 10)
+        self.assertEqual(silent["end_sample"], 2000)
+        self.assertEqual(silent["end_seconds"], 200.0)
+        self.assertEqual(
+            silent["model_audio_content_sha256"],
+            _MODULE._audio_content_sha256(
+                waveform[0, 0, silent["start_sample"]:silent["end_sample"]].numpy(), 10
+            ),
+        )
         self.assertEqual(text, "片段1片段2")
+
+    def test_long_asr_does_not_mark_nonzero_source_channels_as_silent(self):
+        # Opposing stereo channels cancel in mono, but the source is not digital zero.
+        waveform = torch.stack([torch.ones(100), -torch.ones(100)]).reshape(1, 2, 100)
+        model = _AsrModel()
+        text, _language, _timestamps, metadata_json, _evidence = HydraQwen3LongAsrTranscribe().transcribe(
+            model, {"waveform": waveform, "sample_rate": 10}, language="Chinese", return_timestamps=False
+        )
+        self.assertEqual(model.calls, 1)
+        self.assertEqual(text, "片段1")
+        self.assertNotIn("silent", json.loads(metadata_json)["chunks"][0])
+
+    def test_long_asr_distinguishes_nonzero_chunk_model_failures(self):
+        audio = {"waveform": torch.full((1, 1, 100), 1e-38), "sample_rate": 10}
+        cases = (
+            (None, "chunk_result_missing:1"),
+            ([], "chunk_result_missing:1"),
+            ([SimpleNamespace(text="a"), SimpleNamespace(text="b")], "chunk_result_count_invalid:1:2"),
+            ([SimpleNamespace(text=" ")], "chunk_text_empty:1"),
+            (object(), "chunk_result_type_invalid:1"),
+        )
+        for result, expected in cases:
+            with self.subTest(expected=expected):
+                model = SimpleNamespace(transcribe=lambda **_kwargs: result)
+                with self.assertRaisesRegex(ValueError, expected):
+                    HydraQwen3LongAsrTranscribe().transcribe(model, audio, return_timestamps=False)
+
+    def test_long_asr_rejects_an_entirely_silent_input(self):
+        model = _AsrModel()
+        audio = {"waveform": torch.zeros((1, 1, 100)), "sample_rate": 10}
+        with self.assertRaisesRegex(ValueError, "hydra_qwen3_long_asr_all_chunks_silent"):
+            HydraQwen3LongAsrTranscribe().transcribe(model, audio, return_timestamps=False)
+        self.assertEqual(model.calls, 0)
 
     def test_receipt_records_long_audio_chunk_merge_and_strict_alignment(self):
         audio = {

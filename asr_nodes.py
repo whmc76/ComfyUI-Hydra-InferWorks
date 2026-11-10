@@ -1158,17 +1158,24 @@ class HydraQwen3LongAsrTranscribe:
         texts = []
         lines = []
         chunk_receipts = []
+        source_channels = audio["waveform"].detach().cpu()[0]
         for index in range(len(boundaries) - 1):
             start_sample = boundaries[index]
             end_sample = boundaries[index + 1]
             start_seconds = start_sample / sample_rate
             end_seconds = end_sample / sample_rate
-            if not np.any(waveform[start_sample:end_sample]):
-                # A digital-zero chunk has no speech to transcribe; record it instead of failing.
+            if not torch.any(source_channels[..., start_sample:end_sample] != 0).item():
+                # Require digital zero on every source channel, before mono mixing.
                 chunk_receipts.append({
                     "index": index + 1,
                     "start_seconds": round(start_seconds, 6),
                     "end_seconds": round(end_seconds, 6),
+                    "start_sample": start_sample,
+                    "end_sample": end_sample,
+                    "sample_rate": sample_rate,
+                    "model_audio_content_sha256": _audio_content_sha256(
+                        waveform[start_sample:end_sample], sample_rate
+                    ),
                     "silent": "silent_digital_zero",
                     "text_sha256": hashlib.sha256(b"").hexdigest(),
                     "timestamp_count": 0,
@@ -1183,8 +1190,16 @@ class HydraQwen3LongAsrTranscribe:
                 # Decode timestamps through the same native-logit path as locked alignment.
                 return_time_stamps=False,
             )
-            if not results or len(results) != 1 or not _text(getattr(results[0], "text", "")):
+            try:
+                result_count = len(results) if results is not None else 0
+            except TypeError as error:
+                raise ValueError(f"hydra_qwen3_long_asr_chunk_result_type_invalid:{index + 1}") from error
+            if result_count == 0:
                 raise ValueError(f"hydra_qwen3_long_asr_chunk_result_missing:{index + 1}")
+            if result_count != 1:
+                raise ValueError(f"hydra_qwen3_long_asr_chunk_result_count_invalid:{index + 1}:{result_count}")
+            if not _text(getattr(results[0], "text", "")):
+                raise ValueError(f"hydra_qwen3_long_asr_chunk_text_empty:{index + 1}")
             result = results[0]
             chunk_text = _text(result.text)
             texts.append(chunk_text)
